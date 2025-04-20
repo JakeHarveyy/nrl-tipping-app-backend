@@ -5,12 +5,18 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_restful import Api  # <<< Import Api
 from flask_cors import CORS
+from flask_bcrypt import Bcrypt # Import Bcrypt
+from flask_jwt_extended import JWTManager # Import JWTManager
+from authlib.integrations.flask_client import OAuth # Import OAuth
 
 from app.config import config_by_name
 
 db = SQLAlchemy()
 migrate = Migrate()
 api_restful = Api() # <<< Instantiate Api HERE, outside the factory
+bcrypt = Bcrypt() # Instantiate Bcrypt
+jwt = JWTManager() # Instantiate JWTManager
+oauth = OAuth() # Instantiate OAuth
 
 def create_app(config_name=None):
     """Application Factory Pattern"""
@@ -25,19 +31,33 @@ def create_app(config_name=None):
     # Initialize extensions that need the app object directly
     db.init_app(app)
     migrate.init_app(app, db)
+    bcrypt.init_app(app) # Initialize Bcrypt with app
+    jwt.init_app(app) # Initialize JWTManager with app
+    oauth.init_app(app) # Initialize OAuth with app
     CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+    # Register Google OAuth client with Authlib
+    oauth.register(
+        name='google',
+        client_id=app.config.get('GOOGLE_CLIENT_ID'),
+        client_secret=app.config.get('GOOGLE_CLIENT_SECRET'),
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration', # Discovery URL
+        client_kwargs={
+            'scope': 'openid email profile' # Scopes determine what info you ask for
+        }
+    )
+
 
     # Import models AFTER db is initialized IF they rely on db instance directly at import time
     # (Generally safer to import them here or inside routes where needed)
     from app import models
 
-    # --- CRITICAL PART ---
+    # --- Initialise API Routes ---
     # Import the function that initializes routes
     from app.api.routes import initialize_routes
-    # Initialize Flask-RESTful with the app AFTER app creation
     api_restful.init_app(app)
-    # Call the function to add resources to the api_restful object
     initialize_routes(api_restful)
+    print("--- API Routes Initialized ---")
     # ---------------------
 
     # Example basic route (can be removed later)

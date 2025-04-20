@@ -1,6 +1,6 @@
 # app/models.py
-from datetime import datetime
-from app import db
+from datetime import datetime, timezone
+from app import db, bcrypt
 # Import bcrypt later when needed for passwords
 # from flask_bcrypt import Bcrypt
 # bcrypt = Bcrypt()
@@ -10,13 +10,14 @@ class User(db.Model):
     user_id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False, index=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.String(255), nullable=True) # Nullable for OAuth
-    google_id = db.Column(db.String(255), unique=True, nullable=True, index=True)
+    password_hash = db.Column(db.String(255), nullable=True) # Nullable for local OAuth
+    google_id = db.Column(db.String(255), unique=True, nullable=True, index=True) #for google auth
     bankroll = db.Column(db.Numeric(12, 2), nullable=False, default=1000.00)
     is_email_verified = db.Column(db.Boolean, default=False)
-    registration_date = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(datetime.timezone.utc))
+    registration_date = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)) # Use timezone.utc
     last_login = db.Column(db.DateTime(timezone=True), nullable=True)
     active = db.Column(db.Boolean, default=True)
+    
 
     # Relationships (will be added/used later)
     # bets = db.relationship('Bet', backref='user', lazy=True)
@@ -26,6 +27,35 @@ class User(db.Model):
         return f"<User {self.username}>"
 
     # Add password hashing/checking methods later
+    def set_password(self, password):
+        """Hashes the password and stores it"""
+        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+    def check_password(self, password):
+        """Checks if the provided password matches the stored hash"""
+        if not self.password_hash: # User might only have Google login
+             return False
+        return bcrypt.check_password_hash(self.password_hash, password)
+    
+    @classmethod
+    def find_by_email(cls, email):
+        return cls.query.filter_by(email=email).first()
+
+    @classmethod
+    def find_by_username(cls, username):
+        return cls.query.filter_by(username=username).first()
+
+    @classmethod
+    def find_by_google_id(cls, google_id):
+        return cls.query.filter_by(google_id=google_id).first()
+
+    def save_to_db(self):
+        db.session.add(self)
+        db.session.commit()
+
+    def __repr__(self):
+        return f"<User {self.username}>"
+    
 
 class Round(db.Model):
     __tablename__ = 'rounds'

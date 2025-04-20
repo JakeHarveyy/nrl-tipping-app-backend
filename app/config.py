@@ -12,6 +12,9 @@ class Config:
         'sqlite:///' + os.path.join(basedir, 'app.db') # Fallback to SQLite if DATABASE_URL not set
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     # Add other configurations as needed
+    
+    GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
+    GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
 
 class DevelopmentConfig(Config):
     DEBUG = True
