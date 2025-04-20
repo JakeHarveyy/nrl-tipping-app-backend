@@ -1,0 +1,25 @@
+# nrl-tipping-app/docker-compose.yml
+
+version: '3.8' # Specifies the file format version
+
+services:     # Defines the containers/services to run
+  db:         # A custom name for our database service (you can call it something else)
+    image: postgres:15  # Use the official PostgreSQL image, version 15 (recommended over 'latest')
+    container_name: nrl_tipping_db_dev # A specific name for the running container instance
+    restart: always # Optional: automatically restarts the container if it stops
+    environment:
+      # These variables configure the PostgreSQL instance INSIDE the container
+      POSTGRES_USER: JakeHarvey       
+      POSTGRES_PASSWORD: testpass123
+      POSTGRES_DB: nrl_tipping_db   
+    ports:
+      # Maps port 5432 on your computer (HOST) to port 5432 inside the container (CONTAINER)
+      # Format: "HOST:CONTAINER"
+      - "5432:5432"
+    volumes:
+      # Persists the database data outside the container, so it's not lost if the container is removed
+      # 'postgres_data' is a Docker "named volume". Docker manages where this is stored.
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data: # Declares the named volume used above
