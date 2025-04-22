@@ -34,7 +34,7 @@ def create_app(config_name=None):
     bcrypt.init_app(app) # Initialize Bcrypt with app
     jwt.init_app(app) # Initialize JWTManager with app
     oauth.init_app(app) # Initialize OAuth with app
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
 
     # Register Google OAuth client with Authlib
     oauth.register(

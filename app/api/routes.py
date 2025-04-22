@@ -7,6 +7,7 @@ from app import db, oauth
 from datetime import datetime, timezone
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
 import secrets
+from urllib.parse import urlencode
 
 class RoundListResource(Resource): # Ensure it inherits from Resource
     def get(self):
@@ -155,84 +156,66 @@ class GoogleAuthCallback(Resource):
             token = oauth.google.authorize_access_token()
         except Exception as e:
              print(f"Error authorizing access token: {e}")
-             # Redirect to frontend login page with error message
-             # For now, return a simple error
-             return {'message': 'Error authorizing with Google.'}, 401
+             # Redirect to frontend login page with error query param
+             frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_auth_failed"
+             return redirect(frontend_error_url)
 
-
-        # Get user info from Google using the obtained token
-        # The userinfo endpoint is standard for OpenID Connect
         user_info = oauth.google.get('https://openidconnect.googleapis.com/v1/userinfo').json()
-        # Or use: user_info = token.get('userinfo') if using OpenID Connect features of Authlib fully
-
-        google_id = user_info.get('sub') # 'sub' is the standard OpenID subject identifier (Google ID)
+        google_id = user_info.get('sub')
         email = user_info.get('email')
-        # picture = user_info.get('picture')
-        # first_name = user_info.get('given_name')
-        username = user_info.get('email').split('@')[0] # Use email prefix as default username
+        username = user_info.get('email').split('@')[0] # Default username
 
         if not email or not google_id:
-             return {'message': 'Could not retrieve required info from Google.'}, 400
+             frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_info_missing"
+             return redirect(frontend_error_url)
 
-        # Check if user exists by Google ID
         user = User.find_by_google_id(google_id)
-
+        # ... (logic to find by email or create new user as before) ...
         if not user:
-            # Check if user exists by email (maybe registered locally before)
             user = User.find_by_email(email)
             if user:
-                # User exists via email, link Google ID
-                if user.google_id is None:
-                    user.google_id = google_id
-                # Optionally update other fields if needed
-                if not user.is_email_verified: # Google verifies email
-                     user.is_email_verified = True
+                if user.google_id is None: user.google_id = google_id
+                if not user.is_email_verified: user.is_email_verified = True
             else:
-                # User doesn't exist, create a new one
-                # Ensure generated username is unique
                 temp_username = username
                 counter = 1
                 while User.find_by_username(temp_username):
                     temp_username = f"{username}{counter}"
                     counter += 1
                 username = temp_username
-
-                user = User(
-                    username=username,
-                    email=email.lower(),
-                    google_id=google_id,
-                    is_email_verified=True # Email verified by Google
-                    # Set default bankroll, etc.
-                )
-            # Save new user or updated user link
+                user = User(username=username, email=email.lower(), google_id=google_id, is_email_verified=True)
             try:
                  user.save_to_db()
             except Exception as e:
                  print(f"Error saving Google user: {e}")
-                 return {'message': 'An error occurred processing Google login.'}, 500
+                 frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_db_error"
+                 return redirect(frontend_error_url)
 
-        # User now exists (either found, linked, or created)
-        # Create JWT tokens for the user session
+        # --- Create Tokens (ensure identity is string) ---
         access_token = create_access_token(identity=str(user.user_id), fresh=True)
         refresh_token = create_refresh_token(identity=str(user.user_id))
+        # --------------------------------------------------
 
-        # Update last_login time
         user.last_login = datetime.now(timezone.utc)
         db.session.commit()
 
-        # TODO: Redirect to Frontend with tokens
-        # For now, just return the tokens (less secure for redirect flow)
-        # In a real app, you'd redirect to a frontend URL like:
-        # frontend_url = f"http://localhost:3000/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
-        # return redirect(frontend_url)
-
-        return {
-            'message': 'Successfully logged in with Google.',
+        # --- Redirect to Frontend with Tokens ---
+        frontend_base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:5173')
+        # Define the target path on the frontend for handling this callback
+        frontend_callback_path = '/auth/google/callback'
+        # Prepare query parameters
+        params = {
             'access_token': access_token,
-            'refresh_token': refresh_token,
-            'user_id': user.user_id,
-            'username': user.username
-         }, 200
+            'refresh_token': refresh_token
+            # Optionally add user info if needed directly, but fetching is better
+            # 'user_id': user.user_id,
+            # 'username': user.username
+        }
+        # Construct the full redirect URL
+        redirect_url = f"{frontend_base_url}{frontend_callback_path}?{urlencode(params)}"
+
+        print(f"Redirecting to frontend: {redirect_url}") # Debugging
+        return redirect(redirect_url, code=302)
 
 # --- Example Protected Resource ---
 class UserProfile(Resource):
