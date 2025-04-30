@@ -5,6 +5,7 @@ alembic==1.15.2
 aniso8601==10.0.0
 annotated-types==0.7.0
 anyio==4.8.0
+APScheduler==3.11.0
 attrs==25.1.0
 Authlib==1.5.2
 bcrypt==4.3.0
@@ -23,6 +24,7 @@ cycler==0.12.1
 DateTime==5.5
 deprecation==2.1.0
 Flask==3.1.0
+Flask-APScheduler==1.13.1
 Flask-Bcrypt==1.0.1
 flask-cors==5.0.1
 Flask-JWT-Extended==4.7.1
@@ -106,6 +108,7 @@ trio==0.28.0
 trio-websocket==0.11.1
 typing_extensions==4.12.2
 tzdata==2025.2
+tzlocal==5.3.1
 uritemplate==4.1.1
 urllib3==2.3.0
 websocket-client==1.8.0

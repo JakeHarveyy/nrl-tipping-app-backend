@@ -1,5 +1,6 @@
 # app/models.py
 from datetime import datetime, timezone
+from decimal import Decimal
 from app import db, bcrypt
 # Import bcrypt later when needed for passwords
 # from flask_bcrypt import Bcrypt
@@ -12,12 +13,14 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=True) # Nullable for local OAuth
     google_id = db.Column(db.String(255), unique=True, nullable=True, index=True) #for google auth
-    bankroll = db.Column(db.Numeric(12, 2), nullable=False, default=1000.00)
+    bankroll = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal('1000.00'))
     is_email_verified = db.Column(db.Boolean, default=False)
     registration_date = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)) # Use timezone.utc
     last_login = db.Column(db.DateTime(timezone=True), nullable=True)
     active = db.Column(db.Boolean, default=True)
     
+    bets = db.relationship('Bet', backref='user', lazy='dynamic')
+    bankroll_history = db.relationship('BankrollHistory', backref='user', lazy='dynamic')
 
     # Relationships (will be added/used later)
     # bets = db.relationship('Bet', backref='user', lazy=True)
@@ -102,6 +105,7 @@ class Match(db.Model):
 
     # Relationships (will be added/used later)
     # bets = db.relationship('Bet', backref='match', lazy=True)
+    bets = db.relationship('Bet', backref='match', lazy='dynamic')
 
     def __repr__(self):
         return f"<Match {self.home_team} vs {self.away_team} @ {self.start_time}>"
@@ -126,3 +130,78 @@ class Match(db.Model):
         }
 
 # Add Bet and BankrollHistory models in later phases
+class Bet(db.Model):
+    __tablename__ = 'bets'
+    bet_id = db.Column(db.Integer, primary_key=True)
+    # Foreign Keys linking to User and Match tables
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
+    match_id = db.Column(db.Integer, db.ForeignKey('matches.match_id'), nullable=False, index=True)
+    # Store round_id denormalized for easier querying/filtering by round if needed
+    round_id = db.Column(db.Integer, db.ForeignKey('rounds.round_id'), nullable=False, index=True)
+
+    team_selected = db.Column(db.String(100), nullable=False) # e.g., "Broncos" or "Cowboys"
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    odds_at_placement = db.Column(db.Numeric(6, 3), nullable=False)
+    potential_payout = db.Column(db.Numeric(12, 2), nullable=False) # amount * odds_at_placement
+    status = db.Column(db.String(20), nullable=False, default='Pending', index=True) # Pending, Active, Won, Lost, Void
+    placement_time = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    settlement_time = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    # Relationships are defined via backref in User and Match models
+
+    def __repr__(self):
+        return f"<Bet {self.bet_id} User:{self.user_id} Match:{self.match_id} Amt:{self.amount} Status:{self.status}>"
+
+    def to_dict(self):
+        # Include related info for easy frontend display
+        return {
+            'bet_id': self.bet_id,
+            'user_id': self.user_id,
+            'match_id': self.match_id,
+            'round_number': self.match.round.round_number, # Access via relationships
+            'home_team': self.match.home_team,
+            'away_team': self.match.away_team,
+            'match_start_time': self.match.start_time.isoformat(),
+            'team_selected': self.team_selected,
+            'amount': float(self.amount),
+            'odds_at_placement': float(self.odds_at_placement),
+            'potential_payout': float(self.potential_payout),
+            'status': self.status,
+            'placement_time': self.placement_time.isoformat(),
+            'settlement_time': self.settlement_time.isoformat() if self.settlement_time else None,
+        }
+    
+class BankrollHistory(db.Model):
+    __tablename__ = 'bankroll_history'
+    history_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
+    # Denormalize round_number for easier filtering/reporting later
+    round_number = db.Column(db.Integer, nullable=True) # Nullable if not related to a specific round (e.g., initial deposit)
+
+    change_type = db.Column(db.String(50), nullable=False, index=True)
+    # Examples: 'Initial Deposit', 'Weekly Addition', 'Bet Placement', 'Bet Win', 'Bet Loss', 'Bet Void', 'Admin Adjustment'
+
+    # Link to the bet that caused this change, if applicable
+    related_bet_id = db.Column(db.Integer, db.ForeignKey('bets.bet_id'), nullable=True, index=True)
+    related_bet = db.relationship('Bet', backref='bankroll_history_entries') # Relationship to Bet
+
+    amount_change = db.Column(db.Numeric(12, 2), nullable=False) # Positive or negative
+    previous_balance = db.Column(db.Numeric(12, 2), nullable=False)
+    new_balance = db.Column(db.Numeric(12, 2), nullable=False)
+    timestamp = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+    def __repr__(self):
+        return f"<BankrollHistory {self.history_id} User:{self.user_id} Type:{self.change_type} Amt:{self.amount_change}>"
+
+    def to_dict(self):
+         return {
+            'history_id': self.history_id,
+            'user_id': self.user_id,
+            'round_number': self.round_number,
+            'change_type': self.change_type,
+            'related_bet_id': self.related_bet_id,
+            'amount_change': float(self.amount_change),
+            'previous_balance': float(self.previous_balance),
+            'new_balance': float(self.new_balance),
+            'timestamp': self.timestamp.isoformat()
+        }

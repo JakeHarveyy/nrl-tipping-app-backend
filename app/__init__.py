@@ -7,6 +7,7 @@ from flask_restful import Api  # <<< Import Api
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt # Import Bcrypt
 from flask_jwt_extended import JWTManager # Import JWTManager
+from flask_apscheduler import APScheduler
 from authlib.integrations.flask_client import OAuth # Import OAuth
 
 from app.config import config_by_name
@@ -17,6 +18,57 @@ api_restful = Api() # <<< Instantiate Api HERE, outside the factory
 bcrypt = Bcrypt() # Instantiate Bcrypt
 jwt = JWTManager() # Instantiate JWTManager
 oauth = OAuth() # Instantiate OAuth
+scheduler = APScheduler()
+
+def weekly_bankroll_update_job():
+    """Adds $1000 to every active user's bankroll."""
+    # This job runs outside the normal request context, so we need app context
+    app = scheduler.app # Get the app instance the scheduler is bound to
+    with app.app_context():
+        print("--- Running Weekly Bankroll Update Job ---")
+        from app.models import User, BankrollHistory, Round # Import models inside context
+        from app import db
+        from decimal import Decimal
+        from datetime import datetime, timezone
+
+        # TODO: Determine the current/starting round number logic more accurately later
+        # For now, let's just assume we need a placeholder round number or skip it.
+        # Maybe find the latest 'Active' or 'Upcoming' round?
+        current_round_number = 1 # Placeholder - Needs real logic
+
+        users = User.query.filter_by(active=True).all()
+        print(f"Found {len(users)} active users to update.")
+        added_amount = Decimal('1000.00')
+
+        for user in users:
+            try:
+                previous_balance = user.bankroll
+                new_balance = previous_balance + added_amount
+
+                # Update user's bankroll
+                user.bankroll = new_balance
+
+                # Create history entry
+                history_entry = BankrollHistory(
+                    user_id=user.user_id,
+                    round_number=current_round_number, # Use the determined round number
+                    change_type='Weekly Addition',
+                    related_bet_id=None,
+                    amount_change=added_amount,
+                    previous_balance=previous_balance,
+                    new_balance=new_balance,
+                    timestamp=datetime.now(timezone.utc)
+                )
+                db.session.add(history_entry)
+                # Commit after each user OR commit all at the end (safer to commit per user)
+                db.session.commit()
+                print(f"Updated bankroll for user {user.username} (ID: {user.user_id}). New balance: {new_balance}")
+
+            except Exception as e:
+                db.session.rollback()
+                print(f"ERROR updating bankroll for user {user.username} (ID: {user.user_id}): {e}")
+
+        print("--- Weekly Bankroll Update Job Finished ---")
 
 def create_app(config_name=None):
     """Application Factory Pattern"""
@@ -34,6 +86,8 @@ def create_app(config_name=None):
     bcrypt.init_app(app) # Initialize Bcrypt with app
     jwt.init_app(app) # Initialize JWTManager with app
     oauth.init_app(app) # Initialize OAuth with app
+    scheduler.init_app(app)
+    scheduler.start()
     CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
 
     # Register Google OAuth client with Authlib
@@ -47,6 +101,22 @@ def create_app(config_name=None):
         }
     )
 
+    job_id = 'weekly_bankroll_update'
+    if not scheduler.get_job(job_id):
+         scheduler.add_job(
+             id=job_id,
+             func=weekly_bankroll_update_job,
+             #trigger='cron', # Use 'interval' for testing, 'cron' for production schedule
+             # day_of_week='mon', # Example: Run every Monday
+             # hour=0,
+             # minute=5
+             # For testing every 2 minutes:
+             trigger='interval',
+             minutes=2
+         )
+         print(f"Scheduled job '{job_id}'")
+    else:
+         print(f"Job '{job_id}' already scheduled.")
 
     # Import models AFTER db is initialized IF they rely on db instance directly at import time
     # (Generally safer to import them here or inside routes where needed)

@@ -2,12 +2,15 @@
 from flask import request, redirect, url_for, session, current_app
 from flask_restful import Resource, reqparse
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
-from app.models import Round, Match, User
+from app.models import Round, Match, User, Bet, BankrollHistory
 from app import db, oauth
 from datetime import datetime, timezone
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
 import secrets
 from urllib.parse import urlencode
+from decimal import Decimal, InvalidOperation
+from .settlement import settle_bets_for_match
+
 
 class RoundListResource(Resource): # Ensure it inherits from Resource
     def get(self):
@@ -70,6 +73,18 @@ _login_parser = reqparse.RequestParser()
 _login_parser.add_argument('username', type=str, required=True, help='Username cannot be blank')
 _login_parser.add_argument('password', type=str, required=True, help='Password cannot be blank')
 
+# --- Parser for Placing Bets ---
+_bet_parser = reqparse.RequestParser()
+_bet_parser.add_argument('match_id', type=int, required=True, help='Match ID cannot be blank')
+_bet_parser.add_argument('team_selected', type=str, required=True, help='Team selection cannot be blank')
+_bet_parser.add_argument('amount', type=str, required=True, help='Bet amount cannot be blank') # Parse as string initially for Decimal conversion
+
+# --- Parser for Simulating Results ---
+_result_parser = reqparse.RequestParser()
+# Use location='json' to strictly look in the JSON body
+_result_parser.add_argument('home_score', type=int, required=True, help='Home score is required (integer)', location='json')
+_result_parser.add_argument('away_score', type=int, required=True, help='Away score is required (integer)', location='json')
+
 # --- Authentication Resources ---
 
 class UserRegister(Resource):
@@ -82,13 +97,46 @@ class UserRegister(Resource):
         if User.find_by_email(data['email']):
             return {'message': 'A user with that email already exists'}, 400
 
+        initial_bankroll = Decimal('1000.00')
         user = User(
             username=data['username'],
             email=data['email'].lower(), # Store email in lowercase
-            is_email_verified = False
+            is_email_verified = False,
+            bankroll = initial_bankroll
         )
         user.set_password(data['password'])
         # user.is_email_verified = False # Add email verification later
+
+        try:
+            db.session.add(user) # Add user to session
+            db.session.flush() # Flush to assign user.user_id without committing yet
+
+            # --- Log Initial Bankroll ---
+            history_entry = BankrollHistory(
+                user_id=user.user_id,
+                round_number=None, # Or determine current round if applicable/desired
+                change_type='Initial Deposit',
+                related_bet_id=None,
+                amount_change=initial_bankroll,
+                previous_balance=Decimal('0.00'), # Starting from zero
+                new_balance=initial_bankroll,
+                timestamp=datetime.now(timezone.utc) # Ensure timestamp matches
+            )
+            db.session.add(history_entry)
+            # ---------------------------
+
+            db.session.commit() # Commit both user and history entry together
+            print(f"User {user.username} created with ID {user.user_id}")
+            print(f"Initial bankroll history logged for user {user.user_id}")
+
+        except Exception as e:
+            db.session.rollback() # Rollback ALL changes if any error occurs
+            print(f"Error saving user or logging initial bankroll: {e}")
+            # Log the detailed exception
+            import traceback
+            traceback.print_exc()
+            return {'message': 'An error occurred during registration.'}, 500
+
 
         # Generate verification token BEFORE saving (though order doesn't strictly matter here)
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
@@ -344,6 +392,204 @@ class VerifyEmail(Resource):
 
         # TODO: Redirect to a confirmation page or login page on the frontend
         return {'message': 'Email verified successfully!'}, 200
+    
+# --- Betting Resources ---
+
+class PlaceBet(Resource):
+    @jwt_required() # Protect this endpoint
+    def post(self):
+        data = _bet_parser.parse_args()
+        current_user_id = int(get_jwt_identity()) # Identity is string, convert to int
+        user = User.query.get(current_user_id)
+
+        if not user:
+            return {'message': 'User not found'}, 404
+
+        match = Match.query.get(data['match_id'])
+        if not match:
+            return {'message': 'Match not found'}, 404
+
+        # --- Validations ---
+        # 1. Is match still open for betting?
+        if match.start_time <= datetime.now(timezone.utc):
+            return {'message': 'Betting is closed for this match (match has started or finished).'}, 400
+        if match.status != 'Scheduled':
+             return {'message': f'Match status is "{match.status}", betting only allowed on "Scheduled" matches.'}, 400
+
+        # 2. Is team selection valid?
+        selected_odds = None
+        if data['team_selected'] == match.home_team:
+            selected_odds = match.home_odds
+        elif data['team_selected'] == match.away_team:
+            selected_odds = match.away_odds
+        else:
+            return {'message': f"Invalid team selected. Choose '{match.home_team}' or '{match.away_team}'."}, 400
+
+        if selected_odds is None:
+             return {'message': 'Odds not available for the selected team at this time.'}, 400
+
+        # 3. Is amount valid?
+        try:
+            bet_amount = Decimal(data['amount'])
+            if bet_amount <= 0:
+                raise ValueError("Amount must be positive.")
+            # Ensure precision (e.g., allow only 2 decimal places)
+            if bet_amount.as_tuple().exponent < -2:
+                 raise ValueError("Amount cannot have more than two decimal places.")
+        except (ValueError, TypeError) as e:
+             # Catches Decimal conversion errors and explicit ValueErrors
+             print(f"Invalid bet amount format: {data['amount']}. Error: {e}")
+             return {'message': 'Invalid bet amount format. Must be a positive number with up to two decimal places.'}, 400
+
+
+        # 4. Does user have sufficient funds?
+        if user.bankroll < bet_amount:
+            return {'message': f'Insufficient funds. Your balance is ${user.bankroll:.2f}'}, 400
+        # --- End Validations ---
+
+        # --- Calculate Payout ---
+        potential_payout = bet_amount * selected_odds # Decimal multiplication
+
+        # --- Database Transaction ---
+        try:
+            # Start transaction explicitly if needed, or rely on commit/rollback
+            previous_balance = user.bankroll
+            new_balance = previous_balance - bet_amount
+
+            # 1. Update user bankroll
+            user.bankroll = new_balance
+
+            # 2. Create Bet record
+            new_bet = Bet(
+                user_id=user.user_id,
+                match_id=match.match_id,
+                round_id=match.round_id, # Get round_id from the match
+                team_selected=data['team_selected'],
+                amount=bet_amount,
+                odds_at_placement=selected_odds,
+                potential_payout=potential_payout,
+                status='Pending',
+                placement_time=datetime.now(timezone.utc)
+            )
+            db.session.add(new_bet)
+            db.session.flush() # Flush to get new_bet.bet_id if needed now
+
+            # 3. Create BankrollHistory record
+            history_entry = BankrollHistory(
+                user_id=user.user_id,
+                round_number=match.round.round_number, # Get round number from match->round relationship
+                change_type='Bet Placement',
+                related_bet_id=new_bet.bet_id, # Link history to the bet
+                amount_change=-bet_amount, # Negative for placement
+                previous_balance=previous_balance,
+                new_balance=new_balance,
+                timestamp=new_bet.placement_time # Use bet placement time for consistency
+            )
+            db.session.add(history_entry)
+
+            # 4. Commit all changes
+            db.session.commit()
+
+            return {'message': 'Bet placed successfully!', 'bet_details': new_bet.to_dict()}, 201
+
+        except Exception as e:
+            db.session.rollback() # Rollback on any error
+            print(f"ERROR placing bet for user {user.username}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'message': 'An error occurred placing the bet.'}, 500
+        # --- End Transaction ---
+
+
+class UserBetList(Resource):
+    @jwt_required()
+    def get(self):
+        current_user_id = int(get_jwt_identity())
+        user = User.query.get(current_user_id)
+        if not user:
+            return {'message': 'User not found'}, 404
+
+        # --- Filtering by Status (Optional) ---
+        status_filter = request.args.get('status') # e.g., ?status=Pending or ?status=Settled
+        query = user.bets # Access the user's bets via the relationship
+
+        if status_filter:
+            # Validate status filter if desired
+            allowed_statuses = ['Pending', 'Active', 'Won', 'Lost', 'Void', 'Settled'] # Define allowed filters
+            if status_filter == 'Settled': # Allow filtering for all completed bets
+                 query = query.filter(Bet.status.in_(['Won', 'Lost', 'Void']))
+            elif status_filter in allowed_statuses:
+                 query = query.filter(Bet.status == status_filter)
+            # else: ignore invalid filter? Or return error?
+
+        # Order bets, e.g., by placement time descending
+        bets = query.order_by(Bet.placement_time.desc()).all()
+
+        return {'bets': [bet.to_dict() for bet in bets]}, 200
+
+
+class UserBankrollHistoryList(Resource):
+     @jwt_required()
+     def get(self):
+        current_user_id = int(get_jwt_identity())
+        user = User.query.get(current_user_id)
+        if not user:
+            return {'message': 'User not found'}, 404
+
+        # Consider adding pagination later for performance
+        # page = request.args.get('page', 1, type=int)
+        # per_page = request.args.get('per_page', 20, type=int)
+        # history = user.bankroll_history.order_by(BankrollHistory.timestamp.desc()).paginate(page=page, per_page=per_page, error_out=False)
+        # items = history.items
+
+        history_items = user.bankroll_history.order_by(BankrollHistory.timestamp.desc()).all()
+
+        return {
+             'bankroll_history': [item.to_dict() for item in history_items]
+             # Include pagination info if using paginate:
+             # 'total_pages': history.pages,
+             # 'current_page': history.page,
+             # 'total_items': history.total
+        }, 200
+
+# --- Admin/Simulation Resource ---
+class SimulateResult(Resource):
+    @jwt_required() # Protect this endpoint - TODO: Add admin check later if needed
+    def post(self, match_id):
+        data = _result_parser.parse_args()
+        home_score = data['home_score']
+        away_score = data['away_score']
+
+        # Basic score validation
+        if home_score < 0 or away_score < 0:
+            return {'message': 'Scores cannot be negative.'}, 400
+
+        match = Match.query.get(match_id)
+        if not match:
+            return {'message': 'Match not found.'}, 404
+
+        if match.status == 'Completed':
+            return {'message': 'Match has already been settled.'}, 400
+
+        if match.status != 'Scheduled' and match.status != 'Live': # Allow settling Live matches too potentially
+             # Or maybe only allow settling 'Scheduled'/'Live'? Adjust as needed.
+             print(f"Attempt to settle match {match_id} with status {match.status}")
+             # return {'message': f'Cannot settle match with status "{match.status}".'}, 400
+
+        try:
+            # Call the settlement logic function
+            success, message = settle_bets_for_match(match_id, home_score, away_score)
+            if success:
+                return {'message': message or 'Match settled successfully.'}, 200
+            else:
+                # If settlement function returns specific error message
+                return {'message': message or 'Failed to settle match.'}, 400 # Or 500 depending on error type
+        except Exception as e:
+            # Catch unexpected errors during settlement call
+            print(f"Unexpected error calling settlement for match {match_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'message': 'An internal error occurred during settlement.'}, 500
 
 # --- Function to add all routes ---
 
@@ -365,6 +611,14 @@ def initialize_routes(api):
 
     # IMPORTANT: Endpoint name 'googleauthcallback' must match url_for in GoogleLogin
     api.add_resource(GoogleAuthCallback, '/api/auth/google/callback', endpoint='googleauthcallback')
+
+    # Add Betting routes
+    api.add_resource(PlaceBet, '/api/bets/place')
+    api.add_resource(UserBetList, '/api/bets') # Endpoint to view user's bets
+    api.add_resource(UserBankrollHistoryList, '/api/user/bankroll-history') # Endpoint for history
+
+    #simulate reults routes
+    api.add_resource(SimulateResult, '/api/admin/matches/<int:match_id>/simulate-result')
 
     print("--- API Routes Initialized ---") # Keep for debugging startup
 
