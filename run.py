@@ -5,6 +5,7 @@ from decimal import Decimal # <--- Ensure this is imported
 from app import create_app, db # <--- Ensure db is imported
 from app.models import Round, Match # <--- Ensure models are imported
 
+
 # Get config name from environment variable or default to 'dev'
 config_name = os.getenv('FLASK_ENV', 'development') # Use 'development' as key now
 app = create_app(config_name)

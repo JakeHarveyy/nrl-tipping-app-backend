@@ -590,6 +590,43 @@ class SimulateResult(Resource):
             import traceback
             traceback.print_exc()
             return {'message': 'An internal error occurred during settlement.'}, 500
+        
+# --- Leaderboard Resource ---
+class GlobalLeaderboard(Resource):
+    # No JWT required for a public leaderboard, adjust if needed
+    def get(self):
+        # Get query parameters for pagination/limit (optional but good practice)
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int) # Default limit 50
+        # Ensure limit isn't excessively large
+        limit = min(limit, 200)
+
+        try:
+            # Query users, order by bankroll descending, paginate results
+            leaderboard_page = User.query.filter(User.active == True) \
+                                         .order_by(User.bankroll.desc(), User.username.asc()) \
+                                         .paginate(page=page, per_page=limit, error_out=False)
+
+            users_data = [{
+                'rank': (leaderboard_page.page - 1) * leaderboard_page.per_page + i + 1, # Calculate rank
+                'user_id': user.user_id,
+                'username': user.username,
+                'bankroll': float(user.bankroll) # Convert Decimal for JSON
+             } for i, user in enumerate(leaderboard_page.items)] # Use .items with paginate
+
+            return {
+                'leaderboard': users_data,
+                'total_users': leaderboard_page.total,
+                'current_page': leaderboard_page.page,
+                'total_pages': leaderboard_page.pages,
+                'per_page': leaderboard_page.per_page
+             }, 200
+
+        except Exception as e:
+             print(f"Error fetching global leaderboard: {e}")
+             import traceback
+             traceback.print_exc()
+             return {'message': 'Error retrieving leaderboard data.'}, 500
 
 # --- Function to add all routes ---
 
@@ -619,6 +656,9 @@ def initialize_routes(api):
 
     #simulate reults routes
     api.add_resource(SimulateResult, '/api/admin/matches/<int:match_id>/simulate-result')
+
+    # Add Leaderboard route
+    api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
 
     print("--- API Routes Initialized ---") # Keep for debugging startup
 
