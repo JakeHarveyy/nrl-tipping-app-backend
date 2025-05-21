@@ -182,10 +182,13 @@ def check_for_live_matches_job():
         from app.models import Match # Import inside context
 
         now = datetime.now(timezone.utc)
+
         # Define the window more carefully
         # Start checking slightly before kickoff, check for a few hours after
         start_window = now - timedelta(hours=3) # Check games started up to 3 hours ago
         end_window = now + timedelta(minutes=10) # Check games starting in the next 10 mins
+        print(f"Current UTC time (now): {now}")
+        print(f"Querying for matches between {start_window} and {end_window}")
 
         potential_live_matches = Match.query.filter(
             Match.start_time >= start_window,
@@ -232,7 +235,6 @@ def create_app(config_name=None):
     jwt.init_app(app) # Initialize JWTManager with app
     oauth.init_app(app) # Initialize OAuth with app
     scheduler.init_app(app)
-    scheduler.start()
     CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
 
     # Register Google OAuth client with Authlib
@@ -253,7 +255,7 @@ def create_app(config_name=None):
              id=job_id,
              func=check_and_process_rounds_job, # <<< Use new function name
              trigger='interval', # Keep interval for testing
-             minutes=100           # <<< Run frequently for testing
+             minutes=5           # <<< Run frequently for testing
              # Or for production (e.g., every hour):
              # trigger='interval',
              # hours=1
@@ -273,7 +275,7 @@ def create_app(config_name=None):
                     # Use lambda to ensure app context
                     func=lambda: app.app_context().push() or update_matches_from_odds_scraper(), # <<< CALL NEW FUNCTION
                     trigger='interval',
-                    minutes=10 # Or desired frequency
+                    minutes=4 # Or desired frequency
                 )
             else:
                 print(f"Job '{odds_job_id}' already scheduled.")
@@ -283,25 +285,23 @@ def create_app(config_name=None):
     primary_job_id = 'live_match_check_job'
     if app.config.get("ENV") != "testing":
          if not scheduler.get_job(primary_job_id):
-              log.info(f"Scheduling job '{primary_job_id}'")
+              print(f"Scheduling job '{primary_job_id}'")
               scheduler.add_job(
                   id=primary_job_id,
                   func=check_for_live_matches_job, # Schedule the checker
                   trigger='interval',
-                  minutes=5 # How often to check for *new* live games
+                  minutes=1 # How often to check for *new* live games
+                  
               )
          else:
-              log.info(f"Job '{primary_job_id}' already scheduled.")
+              print(f"Job '{primary_job_id}' already scheduled.")
 
-         # Schedule odds job etc... make sure all necessary jobs are added
-
-         # Start scheduler
-         if not scheduler.running:
+    if not scheduler.running:
              try:
                  scheduler.start()
-                 log.info("Scheduler started.")
+                 app.logger.info("Scheduler started successfully.") # Use app.logger
              except Exception as e:
-                 log.error(f"Failed to start scheduler: {e}", exc_info=True)
+                 app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
 
     # Import models AFTER db is initialized IF they rely on db instance directly at import time
     # (Generally safer to import them here or inside routes where needed)
@@ -325,10 +325,6 @@ def create_app(config_name=None):
         except Exception as e:
              print(f"Health check DB connection failed: {e}")
              return "DB Error", 500
-    
-        from app.api.routes import initialize_routes
-    api_restful.init_app(app)
-    initialize_routes(api_restful)
     
     print("--- Registered Routes ---")
     for rule in app.url_map.iter_rules():

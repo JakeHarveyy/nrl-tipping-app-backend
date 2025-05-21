@@ -4,6 +4,9 @@ import json
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 import logging
+from app.models import Match, Round
+from app import db
+from app.utils.text_utils import normalize_team_name
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
@@ -164,3 +167,160 @@ def fetch_match_result(match_identifier_details: dict):
 
     log.info(f"Parsed result for {db_home_team} vs {db_away_team}: Status='{status}', Score={home_score}-{away_score}")
     return status, home_score, away_score
+
+## populate db
+def populate_schedule_from_nrl_com(start_round, end_round, year, competition='111'):
+    """
+    Populates Rounds and Matches from NRL.com data for a given range.
+    This should be the primary source for match structure.
+    """
+    log.info(f"--- Starting Schedule Population from NRL.com: Rounds {start_round}-{end_round}, Year {year} ---")
+    rounds_created = 0
+    matches_created = 0
+    matches_updated = 0 # For updating start times if they change
+
+    for round_num_to_fetch in range(start_round, end_round + 1):
+        log.info(f"Processing Round {round_num_to_fetch} for Year {year} from NRL.com")
+        fixtures = _fetch_nrl_round_data_from_web(round_num=round_num_to_fetch, year=year, competition=competition)
+
+        if not fixtures:
+            log.warning(f"No fixtures found for Round {round_num_to_fetch}, Year {year} on NRL.com. Skipping.")
+            continue
+
+        # --- Find or Create Round from NRL.com data ---
+        # Get round title from first fixture (assuming it's consistent for the round)
+        # Example: "Round 9" -> parse 9
+        actual_round_title = fixtures[0].get('roundTitle', '')
+        try:
+            # Basic parsing, adjust if roundTitle format varies
+            parsed_round_number = int(actual_round_title.replace('Round ', ''))
+            if parsed_round_number != round_num_to_fetch:
+                 log.warning(f"Fetched round title '{actual_round_title}' does not match expected round_num {round_num_to_fetch}. Using parsed: {parsed_round_number}")
+                 # Decide whether to use parsed_round_number or skip. Let's use parsed.
+        except (ValueError, AttributeError):
+            log.error(f"Could not parse round number from title '{actual_round_title}' for fetched Round {round_num_to_fetch}. Skipping this round's fixtures.")
+            continue
+
+        round_obj = Round.query.filter_by(round_number=parsed_round_number, year=year).first()
+        round_match_kickoffs = [] # To estimate round start/end
+
+        # Collect all kickoff times for this round's fixtures first
+        for fixture in fixtures:
+            if fixture.get("type") != "Match":
+                continue
+            kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
+            if kickoff_str:
+                try:
+                    # NRL.com 'Z' means UTC
+                    kickoff_dt = datetime.fromisoformat(kickoff_str.replace('Z', '+00:00'))
+                    round_match_kickoffs.append(kickoff_dt)
+                except ValueError:
+                    log.warning(f"Invalid kickoff time format '{kickoff_str}' for a match in Round {parsed_round_number}. Skipping this match for round date estimation.")
+
+        if not round_match_kickoffs:
+            log.warning(f"No valid kickoff times found for Round {parsed_round_number}, Year {year} to estimate round dates. Skipping round creation/update.")
+            continue
+
+        min_kickoff = min(round_match_kickoffs)
+        max_kickoff = max(round_match_kickoffs)
+
+        if not round_obj:
+            log.info(f"Creating Round {parsed_round_number} ({year}) from NRL.com data.")
+            round_obj = Round(
+                round_number=parsed_round_number,
+                year=year,
+                # Use earliest match kickoff as round start, latest + buffer as round end
+                start_date=min_kickoff.replace(hour=0, minute=0, second=0) - timedelta(days=1), # Day before first game
+                end_date=max_kickoff.replace(hour=23, minute=59, second=59) + timedelta(days=1), # Day after last game
+                status='Upcoming'
+            )
+            db.session.add(round_obj)
+            try:
+                db.session.flush() # Get ID
+                rounds_created += 1
+            except Exception as e_flush:
+                log.error(f"Error flushing new Round {parsed_round_number} ({year}): {e_flush}", exc_info=True)
+                db.session.rollback()
+                continue # Skip this round's matches if round creation fails
+        else:
+             # Optionally update round start/end dates if needed from NRL.com
+             log.info(f"Round {parsed_round_number} ({year}) already exists.")
+
+
+        # --- Process Matches for this Round from NRL.com ---
+        for fixture in fixtures:
+            if fixture.get("type") != "Match":
+                continue
+
+            home_team_name = fixture.get('homeTeam', {}).get('nickName', '').strip()
+            away_team_name = fixture.get('awayTeam', {}).get('nickName', '').strip()
+            kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
+
+            if not all([home_team_name, away_team_name, kickoff_str]):
+                log.warning(f"Skipping fixture due to missing team names or kickoff time: {fixture.get('matchCentreUrl', 'N/A')}")
+                continue
+
+            try:
+                # Use UTC for start_time from NRL.com (assuming 'Z')
+                start_time_dt = datetime.fromisoformat(kickoff_str.replace('Z', '+00:00'))
+            except ValueError:
+                log.warning(f"Invalid kickoff time format '{kickoff_str}' for {home_team_name} vs {away_team_name}. Skipping match.")
+                continue
+
+            # Find or create match based on NRL.com data
+            # Match on round_id, normalized team names. Start time can be used for disambiguation.
+            norm_home = normalize_team_name(home_team_name)
+            norm_away = normalize_team_name(away_team_name)
+
+            # Query for match in this round with these teams (consider start_time too)
+            db_match = Match.query.filter_by(
+                round_id=round_obj.round_id,
+                # You might need to query based on normalized names if your DB names are not yet normalized
+                # Or, if your DB names ARE the NRL.com names, direct compare is fine
+                home_team=home_team_name, # Assuming DB stores NRL.com names
+                away_team=away_team_name
+            ).first() # This assumes only one match between these teams in a round
+
+            current_match_status = parse_match_status(fixture.get('matchMode'), fixture.get('matchState'))
+
+            if not db_match:
+                log.info(f"Creating new match from NRL.com: {home_team_name} vs {away_team_name} for Round {parsed_round_number}")
+                db_match = Match(
+                    round_id=round_obj.round_id,
+                    home_team=home_team_name,
+                    away_team=away_team_name,
+                    start_time=start_time_dt,
+                    status=current_match_status if current_match_status != 'Unknown' else 'Scheduled',
+                    # Odds will be filled by the odds scraper later
+                    home_odds=None,
+                    away_odds=None
+                )
+                db.session.add(db_match)
+                matches_created += 1
+            else:
+                # Match exists, check if start_time or status needs update from NRL.com
+                update_this_match = False
+                if db_match.start_time != start_time_dt:
+                    log.info(f"Updating start_time for {home_team_name} vs {away_team_name} from {db_match.start_time} to {start_time_dt}")
+                    db_match.start_time = start_time_dt
+                    update_this_match = True
+                # Only update status if it's a more "progressed" status from NRL.com
+                # and the match is not yet completed in DB
+                if current_match_status in ['Live', 'Postponed', 'Cancelled'] and \
+                   db_match.status != current_match_status and \
+                   db_match.status != 'Completed':
+                    log.info(f"Updating status for {home_team_name} vs {away_team_name} from {db_match.status} to {current_match_status}")
+                    db_match.status = current_match_status
+                    update_this_match = True
+
+                if update_this_match:
+                    db.session.add(db_match)
+                    matches_updated +=1
+
+    try:
+        db.session.commit()
+    except Exception as e_commit:
+        log.error(f"DB Commit failed for NRL.com schedule population: {e_commit}", exc_info=True)
+        db.session.rollback()
+
+    log.info(f"--- Finished NRL.com Schedule Population. Rounds Created: {rounds_created}, Matches Created: {matches_created}, Matches Updated: {matches_updated} ---")

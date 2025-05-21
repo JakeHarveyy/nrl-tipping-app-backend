@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
 from app.models import Match, Round
 from app import db
+from app.utils.text_utils import normalize_team_name
 
 PINNACLE_API_URL = "https://www.pinnacle.com/config/app.json"
 PINNACLE_MATCHUPS_URL = "https://guest.api.arcadia.pinnacle.com/0.1/leagues/1654/matchups?brandId=0"
@@ -198,163 +199,84 @@ def fetch_pinnacle_nrl_data():
 
 
 
-#edit to populate whole season 
 def update_matches_from_odds_scraper():
-    """
-    Fetches latest odds data and updates the database.
-    Finds or creates Rounds and Matches. Updates odds and start times.
-    """
-    print("--- Starting Match/Odds Update from Scraper ---")
-    scraped_matches = fetch_pinnacle_nrl_data()
+    print("--- Starting Odds Update from Pinnacle ---")
+    scraped_pinnacle_matches = fetch_pinnacle_nrl_data() # This gets Pinnacle data
 
-    if scraped_matches is None:
-        print("ERROR: Failed to fetch data from scraper. Aborting update.")
-        return # Stop if fetching failed critically
+    if scraped_pinnacle_matches is None:
+        print("Failed to fetch data from Pinnacle. Aborting odds update.")
+        return
+    if not scraped_pinnacle_matches:
+        print("No matches returned from Pinnacle scraper for odds update.")
+        return
 
-    if not scraped_matches:
-        print("No matches returned from scraper.")
-        return # Stop if no matches were processed
+    matches_odds_updated = 0
+    matches_not_found_in_db = 0
 
-    # Counters for summary
-    matches_created = 0
-    matches_updated = 0
-    rounds_created = 0
-    skipped_count = 0
-
-    # Process matches one by one
-    for match_data in scraped_matches:
+    for pinnacle_match_data in scraped_pinnacle_matches:
         try:
-            # --- 1. Find or Create Round ---
-            round_number = match_data.get('round_number')
-            start_time_dt = match_data.get('start_time_dt')
+            p_home_team = pinnacle_match_data.get('home_team')
+            p_away_team = pinnacle_match_data.get('away_team')
+            p_start_time_dt = pinnacle_match_data.get('start_time_dt') # Already UTC
+            p_home_odds = pinnacle_match_data.get('home_odds')
+            p_away_odds = pinnacle_match_data.get('away_odds')
 
-            if not round_number or not start_time_dt:
-                print(f"Skipping match due to missing round number or start time. Data: {match_data}")
-                skipped_count += 1
+            if not all([p_home_team, p_away_team, p_start_time_dt]):
+                print(f"Pinnacle data missing key fields: {pinnacle_match_data}")
                 continue
 
-            # Determine year from start time
-            year = start_time_dt.year
+            # Normalize Pinnacle team names
+            norm_p_home = normalize_team_name(p_home_team)
+            norm_p_away = normalize_team_name(p_away_team)
 
-            # Look for existing round
-            round_obj = Round.query.filter_by(round_number=round_number, year=year).first()
+            # Find match in DB (created by NRL.com scraper)
+            # Match based on normalized team names and start time (within a window)
+            time_window_start = p_start_time_dt - timedelta(hours=2)
+            time_window_end = p_start_time_dt + timedelta(hours=2)
 
-            if not round_obj:
-                print(f"Round {round_number} ({year}) not found, creating...")
-                # Estimate start/end dates for the round if needed (can be basic)
-                # A more robust approach might involve a separate process or manual entry for round dates
-                round_start_est = start_time_dt.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1) # Estimate
-                round_end_est = round_start_est + timedelta(days=6) # Estimate week end
+            # This query might need to be more sophisticated if team names are still tricky
+            db_match = Match.query.filter(
+                Match.start_time >= time_window_start,
+                Match.start_time <= time_window_end
+            ).all() # Get all matches in window, then filter by normalized names
 
-                round_obj = Round(
-                    round_number=round_number,
-                    year=year,
-                    start_date=round_start_est, # Use scraped time or estimate
-                    end_date=round_end_est,     # Use scraped time or estimate
-                    status='Upcoming' # Default new rounds to upcoming
-                )
-                db.session.add(round_obj)
-                # Flush to get the ID without committing the whole transaction yet
-                try:
-                    db.session.flush()
-                    print(f"Created Round {round_number} ({year}) with ID {round_obj.round_id}")
-                    rounds_created += 1
-                except Exception as flush_err:
-                    print(f"ERROR: Failed to flush new round {round_number} ({year}): {flush_err}")
-                    db.session.rollback() # Rollback this specific attempt
-                    skipped_count += 1
-                    continue # Skip this match if round creation fails
-            # else:
-                # print(f"Found existing Round {round_number} ({year}) with ID {round_obj.round_id}")
+            found_db_match = None
+            for m in db_match:
+                if normalize_team_name(m.home_team) == norm_p_home and \
+                   normalize_team_name(m.away_team) == norm_p_away:
+                    found_db_match = m
+                    break
 
-
-            # --- 2. Find or Create Match ---
-            external_id = match_data.get('external_id')
-            home_team = match_data.get('home_team')
-            away_team = match_data.get('away_team')
-            home_odds = match_data.get('home_odds') # Already Decimal or None
-            away_odds = match_data.get('away_odds') # Already Decimal or None
-
-            if not home_team or not away_team:
-                 print(f"Skipping match due to missing team names. Data: {match_data}")
-                 skipped_count += 1
-                 continue
-
-            # Try finding by external_id first (most reliable if consistent)
-            match_obj = None
-            if external_id:
-                match_obj = Match.query.filter_by(external_match_id=external_id).first()
-
-            # Fallback: Try finding by teams and round (less reliable due to name variations)
-            # Be cautious with this fallback, might lead to duplicates if names change slightly
-            # if not match_obj:
-            #     print(f"Match with external_id {external_id} not found. Trying fallback lookup...")
-            #     match_obj = Match.query.filter_by(
-            #         round_id=round_obj.round_id,
-            #         home_team=home_team,
-            #         away_team=away_team
-            #     ).first() # This assumes team names are EXACT matches
-
-            if match_obj:
-                # --- 3a. Update Existing Match ---
-                # print(f"Found existing Match ID: {match_obj.match_id} (Ext: {external_id})")
+            if found_db_match:
                 update_needed = False
-                if match_obj.start_time != start_time_dt:
-                    print(f"  Updating start time for Match {match_obj.match_id} from {match_obj.start_time} to {start_time_dt}")
-                    match_obj.start_time = start_time_dt
+                if (p_home_odds is not None and found_db_match.home_odds != p_home_odds) or \
+                   (p_home_odds is None and found_db_match.home_odds is not None):
+                    found_db_match.home_odds = p_home_odds
                     update_needed = True
-                # Compare odds, handling None values and potential precision differences
-                if (home_odds is not None and match_obj.home_odds != home_odds) or \
-                   (home_odds is None and match_obj.home_odds is not None):
-                    print(f"  Updating home odds for Match {match_obj.match_id} from {match_obj.home_odds} to {home_odds}")
-                    match_obj.home_odds = home_odds
-                    update_needed = True
-                if (away_odds is not None and match_obj.away_odds != away_odds) or \
-                   (away_odds is None and match_obj.away_odds is not None):
-                    print(f"  Updating away odds for Match {match_obj.match_id} from {match_obj.away_odds} to {away_odds}")
-                    match_obj.away_odds = away_odds
+                if (p_away_odds is not None and found_db_match.away_odds != p_away_odds) or \
+                   (p_away_odds is None and found_db_match.away_odds is not None):
+                    found_db_match.away_odds = p_away_odds
                     update_needed = True
 
                 if update_needed:
-                    match_obj.last_odds_update = datetime.now(timezone.utc)
-                    db.session.add(match_obj) # Add updated object to session
-                    matches_updated += 1
-                # else:
-                    # print(f"  No updates needed for Match {match_obj.match_id}.")
-
+                    found_db_match.last_odds_update = datetime.now(timezone.utc)
+                    # Store Pinnacle's external_id if you want
+                    found_db_match.external_match_id = pinnacle_match_data.get('external_id')
+                    db.session.add(found_db_match)
+                    matches_odds_updated += 1
+                    print(f"Updated odds for DB Match ID {found_db_match.match_id} ({found_db_match.home_team} vs {found_db_match.away_team}) using Pinnacle data.")
             else:
-                # --- 3b. Create New Match ---
-                print(f"Match not found for Ext ID: {external_id} / Teams: {home_team} vs {away_team}. Creating...")
-                match_obj = Match(
-                    external_match_id=external_id,
-                    round_id=round_obj.round_id,
-                    home_team=home_team,
-                    away_team=away_team,
-                    start_time=start_time_dt,
-                    home_odds=home_odds,
-                    away_odds=away_odds,
-                    status='Scheduled', # Default new matches to Scheduled
-                    last_odds_update = datetime.now(timezone.utc) if home_odds or away_odds else None
-                )
-                db.session.add(match_obj) # Add new object to session
-                matches_created += 1
+                print(f"Could not find DB match for Pinnacle: {norm_p_home} vs {norm_p_away} around {p_start_time_dt}")
+                matches_not_found_in_db +=1
 
         except Exception as e:
-            print(f"ERROR processing scraped match data: {match_data}. Error: {e}")
-            import traceback
-            traceback.print_exc()
-            db.session.rollback() # Rollback any partial changes for this match
-            skipped_count += 1
-            # Continue to the next match instead of stopping the whole process
+            print(f"Error processing Pinnacle match data: {pinnacle_match_data}. Error: {e}", exc_info=True)
+            db.session.rollback()
             continue
-
-    # --- 4. Commit All Changes ---
     try:
         db.session.commit()
-        print("--- Database commit successful ---")
     except Exception as e:
         db.session.rollback()
-        print(f"ERROR: Database commit failed after processing all matches: {e}")
+        print(f"DB Commit failed for odds update: {e}", exc_info=True)
 
-    print(f"--- Finished Match/Odds Update ---")
-    print(f"Summary: Rounds Created: {rounds_created}, Matches Created: {matches_created}, Matches Updated: {matches_updated}, Skipped/Errors: {skipped_count}")
+    print(f"--- Finished Odds Update from Pinnacle. Odds Updated: {matches_odds_updated}, Matches Not Found: {matches_not_found_in_db} ---")
