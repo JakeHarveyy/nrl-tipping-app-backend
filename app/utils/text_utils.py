@@ -46,7 +46,7 @@ TEAM_NAME_MAP = {
     "canterbury-bankstown bulldogs": "Bulldogs",
     "penrith panthers": "Panthers",
     "brisbane broncos": "Broncos",
-    "melbourne storm": "Melbourne Storm", # Usually consistent
+    "melbourne storm": "Storm", # Usually consistent
     "canberra raiders": "Raiders", # Usually consistent
     "manly warringah sea eagles": "Sea Eagles",
     "manly-warringah sea eagles": "Sea Eagles",

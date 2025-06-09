@@ -218,23 +218,25 @@ def check_for_live_matches_job():
 
         log.info("--- Live Match Check Job Finished ---")
 
+
+
+
 def create_app(config_name=None):
-    """Application Factory Pattern"""
     if config_name is None:
         config_name = os.getenv('FLASK_ENV', 'development')
 
     app = Flask(__name__)
     app.config.from_object(config_by_name[config_name])
+    print(f"--- Using database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')} ---")
 
-    print(f"--- Using database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')} ---") # Keep this for debugging
-
-    # Initialize extensions that need the app object directly
+    # --- Initialize extensions with the app object ---
     db.init_app(app)
     migrate.init_app(app, db)
-    bcrypt.init_app(app) # Initialize Bcrypt with app
-    jwt.init_app(app) # Initialize JWTManager with app
-    oauth.init_app(app) # Initialize OAuth with app
-    scheduler.init_app(app)
+    bcrypt.init_app(app)
+    jwt.init_app(app)
+    oauth.init_app(app)
+    scheduler.init_app(app) # Initialize scheduler first
+    scheduler.start()
     CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
 
     # Register Google OAuth client with Authlib
@@ -248,87 +250,68 @@ def create_app(config_name=None):
         }
     )
 
-    job_id = 'round_management_job' # New ID
-    if not scheduler.get_job(job_id):
-         print(f"Scheduling job '{job_id}' with interval trigger.")
-         scheduler.add_job(
-             id=job_id,
-             func=check_and_process_rounds_job, # <<< Use new function name
-             trigger='interval', # Keep interval for testing
-             minutes=5           # <<< Run frequently for testing
-             # Or for production (e.g., every hour):
-             # trigger='interval',
-             # hours=1
-         )
+    api = Api(app)
+    from app.api.routes import initialize_routes
+    initialize_routes(api) # Add all your API resources
+    app.logger.info("--- Flask-RESTful API Routes Initialized ---")
+
+    # --- Schedule Jobs ---
+    
+    # Round Management Job
+    job_id_rounds = 'round_management_job'
+    if not scheduler.get_job(job_id_rounds):
+            print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
+            scheduler.add_job(
+                id=job_id_rounds, func=check_and_process_rounds_job,
+                trigger='interval', minutes=1 # Or your desired interval
+            )
     else:
-         print(f"Job '{job_id}' already scheduled.")
+            print(f"Job '{job_id_rounds}' already scheduled.")
 
     # --- Schedule Odds Scraper Job ---
     from app.services.odds_scraper_service import update_matches_from_odds_scraper
 
     odds_job_id = 'odds_update_job'
-    if app.config.get("ENV") != "testing": # Check environment if needed
-            if not scheduler.get_job(odds_job_id):
-                print(f"Scheduling job '{odds_job_id}'")
-                scheduler.add_job(
-                    id=odds_job_id,
-                    # Use lambda to ensure app context
-                    func=lambda: app.app_context().push() or update_matches_from_odds_scraper(), # <<< CALL NEW FUNCTION
-                    trigger='interval',
-                    minutes=4 # Or desired frequency
-                )
-            else:
-                print(f"Job '{odds_job_id}' already scheduled.")
+    if app.config.get("ENV") != "testing":
+        if not scheduler.get_job(odds_job_id):
+            print(f"Scheduling job '{odds_job_id}'.")
+            scheduler.add_job(
+                id=odds_job_id,
+                func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
+                trigger='interval', 
+                minutes=1 # Or your desired interval
+            )
+        else:
+            print(f"Job '{odds_job_id}' already scheduled.")
 
-
-    # --- Schedule the PRIMARY Check Job ---
+    # --- Schedule live match Check Job ---
     primary_job_id = 'live_match_check_job'
     if app.config.get("ENV") != "testing":
-         if not scheduler.get_job(primary_job_id):
-              print(f"Scheduling job '{primary_job_id}'")
-              scheduler.add_job(
-                  id=primary_job_id,
-                  func=check_for_live_matches_job, # Schedule the checker
-                  trigger='interval',
-                  minutes=1 # How often to check for *new* live games
-                  
-              )
-         else:
-              print(f"Job '{primary_job_id}' already scheduled.")
+        if not scheduler.get_job(primary_job_id):
+                print(f"Scheduling job '{primary_job_id}'.")
+                scheduler.add_job(
+                    id=primary_job_id, 
+                    func=check_for_live_matches_job,
+                    trigger='interval',
+                    minutes=2 # Or your desired interval
+                )
+        else:
+                print(f"Job '{primary_job_id}' already scheduled.")
 
+    # Start the scheduler AFTER all jobs have been added
     if not scheduler.running:
-             try:
-                 scheduler.start()
-                 app.logger.info("Scheduler started successfully.") # Use app.logger
-             except Exception as e:
-                 app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
-
-    # Import models AFTER db is initialized IF they rely on db instance directly at import time
-    # (Generally safer to import them here or inside routes where needed)
-    from app import models
-
-    # --- Initialise API Routes ---
-    # Import the function that initializes routes
-    from app.api.routes import initialize_routes
-    api_restful.init_app(app)
-    initialize_routes(api_restful)
-    print("--- API Routes Initialized ---")
-    # ---------------------
-
-    # Example basic route (can be removed later)
-    @app.route('/health')
-    def health_check():
-        # Check DB connection maybe?
         try:
-             db.session.execute(db.text('SELECT 1'))
-             return "OK", 200
+            scheduler.start()
+            app.logger.info("Scheduler started successfully.")
         except Exception as e:
-             print(f"Health check DB connection failed: {e}")
-             return "DB Error", 500
-    
-    print("--- Registered Routes ---")
-    for rule in app.url_map.iter_rules():
-        print(f"Endpoint: {rule.endpoint}, Methods: {list(rule.methods)}, Path: {rule.rule}")
-    print("-----------------------")
+            app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
+    # --- End Job Scheduling ---
 
+    if app.debug or os.environ.get("FLASK_ENV") == "development":
+        app.logger.info("--- Final Registered Routes (app.url_map) ---")
+        for rule in app.url_map.iter_rules():
+            app.logger.info(f"Endpoint: {rule.endpoint}, Methods: {list(rule.methods)}, Path: {rule.rule}")
+        app.logger.info("----------------------------------------------------------")
+
+    app.logger.info("--- App Creation Complete ---")
     return app

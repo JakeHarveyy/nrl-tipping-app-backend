@@ -1,0 +1,34 @@
+Later fixes
+
+update the app/__init__.py 
+scheduler, with proper rounds and time to schedule
+
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6dHJ1ZSwiaWF0IjoxNzQ1OTg2MzE1LCJqdGkiOiI1NWRkMjI2NC03OWZlLTQzZDQtOTg2MC0wNjNlYjc0ZGQzMDciLCJ0eXBlIjoiYWNjZXNzIiwic3ViIjoiMSIsIm5iZiI6MTc0NTk4NjMxNSwiY3NyZiI6ImMwYmNlYTFjLWYzYzUtNDM0MS04ZGI5LTZjMzAyMzE0M2E4MiIsImV4cCI6MTc0NTk4NzIxNX0.i7I5vtDhL9Ao2U4_gd6mfCfe3wMydaIsu1Eo1XBgm_M
+
+restart database
+
+docker compose down
+
+docker volume ls
+
+docker volume rm nrl-tipping-app_postgres_data
+
+docker compose up -d db
+
+flask db upgrade
+
+source venv/Scripts/activate
+
+npm run dev
+
+unset DATABASE_URL
+
+bugs
+-launch page is logged in
+-match results page is not working
+
+Potential other work
+-add live scores 
+-add live betting
+-add a global chat

@@ -20,32 +20,54 @@ class RoundListResource(Resource): # Ensure it inherits from Resource
         return {'rounds': [r.to_dict() for r in rounds]}, 200
 
 
-class MatchListResource(Resource): # Ensure it inherits from Resource
+class MatchListResource(Resource):
     def get(self):
-        """Get list of matches, optionally filtered"""
-        # ... (implementation as before) ...
-        # Ensure filtering logic is correct
-        status_filter = request.args.get('status', 'Scheduled')
-        round_filter = request.args.get('round_number', type=int)
-        year_filter = request.args.get('year', type=int, default=datetime.now(timezone.utc).year)
+        now = datetime.now(timezone.utc)
+        target_round_number = request.args.get('round_number', type=int)
+        target_year = request.args.get('year', type=int, default=now.year)
+        # status_filter = request.args.get('status', 'Scheduled') # We might not need status filter if filtering by round status
 
-        query = Match.query
-        if status_filter:
-            query = query.filter(Match.status == status_filter)
+        query = Match.query.join(Round) # Always join with Round
 
-        if round_filter is not None:
-            query = query.join(Round).filter(Round.round_number == round_filter, Round.year == year_filter)
+        current_active_round_obj = None
+
+        if target_round_number is None:
+            # No specific round requested, try to find the 'Active' round
+            active_round = Round.query.filter_by(status='Active', year=target_year).first()
+            if active_round:
+                query = query.filter(Match.round_id == active_round.round_id)
+                current_active_round_obj = active_round
+            else:
+                # No active round, find the earliest 'Upcoming' round for the year
+                upcoming_round = Round.query.filter_by(status='Upcoming', year=target_year) \
+                                         .order_by(Round.start_date.asc()).first()
+                if upcoming_round:
+                    query = query.filter(Match.round_id == upcoming_round.round_id)
+                    current_active_round_obj = upcoming_round
+                else:
+                    # No active or upcoming rounds found for the year
+                    return {'matches': [], 'round_info': None, 'message': f'No active or upcoming rounds found for {target_year}.'}, 200
         else:
-             current_time = datetime.now(timezone.utc)
-             # Maybe filter by start_time > now OR status = 'Scheduled'/'Live' for upcoming?
-             query = query.filter(Match.start_time >= current_time)
-             # Or query = query.filter(Match.status.in_(['Scheduled', 'Live']))
+            # Specific round requested
+            specific_round = Round.query.filter_by(round_number=target_round_number, year=target_year).first()
+            if specific_round:
+                query = query.filter(Match.round_id == specific_round.round_id)
+                current_active_round_obj = specific_round # Keep track of the round being displayed
+            else:
+                return {'matches': [], 'round_info': None, 'message': f'Round {target_round_number} for year {target_year} not found.'}, 404
 
+        matches = query.order_by(Match.start_time.asc()).all()
 
-        query = query.order_by(Match.start_time.asc())
-        matches = query.all()
-        return {'matches': [m.to_dict() for m in matches]}, 200
+        round_info = None
+        if current_active_round_obj: # If a round was determined
+            round_info = {
+                'round_id': current_active_round_obj.round_id,
+                'round_number': current_active_round_obj.round_number,
+                'year': current_active_round_obj.year,
+                'status': current_active_round_obj.status # <<< SEND ROUND STATUS
+            }
 
+        return {'matches': [m.to_dict() for m in matches], 'round_info': round_info}, 200
 
 class MatchResource(Resource): # Ensure it inherits from Resource
      def get(self, match_id):
@@ -660,6 +682,6 @@ def initialize_routes(api):
     # Add Leaderboard route
     api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
 
-    print("--- API Routes Initialized ---") # Keep for debugging startup
+     # Keep for debugging startup
 
     
