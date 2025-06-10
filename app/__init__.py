@@ -142,8 +142,24 @@ def scrape_specific_match_result_job(match_id_to_scrape):
 
             original_db_status = match.status # Store original status
 
-            # Update DB status if changed and relevant (Live, Postponed, Cancelled)
-            if status in ['Live', 'Postponed', 'Cancelled'] and match.status != status:
+            # update match status if live , postponed, cancelled
+            if status == 'Live':
+                log.info(f"{job_log_prefix} Match status is Live. Updating scores if changed.")
+                needs_commit = False
+                if match.status != 'Live':
+                    match.status = 'Live'
+                    needs_commit = True
+                # Update scores if they are provided and different
+                if home_score is not None and match.result_home_score != home_score:
+                    match.result_home_score = home_score
+                    needs_commit = True
+                if away_score is not None and match.result_away_score != away_score:
+                    match.result_away_score = away_score
+                    needs_commit = True
+                if needs_commit:
+                    db.session.add(match)
+                    db.session.commit()
+            elif status in ['Postponed', 'Cancelled'] and match.status != status:
                  log.info(f"{job_log_prefix} DB Status changing from '{match.status}' to '{status}'.")
                  match.status = status
                  db.session.add(match)
@@ -263,7 +279,7 @@ def create_app(config_name=None):
             print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
             scheduler.add_job(
                 id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=1 # Or your desired interval
+                trigger='interval', minutes=5 # Or your desired interval
             )
     else:
             print(f"Job '{job_id_rounds}' already scheduled.")
@@ -279,7 +295,7 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=1 # Or your desired interval
+                minutes=5 # Or your desired interval
             )
         else:
             print(f"Job '{odds_job_id}' already scheduled.")
@@ -293,7 +309,7 @@ def create_app(config_name=None):
                     id=primary_job_id, 
                     func=check_for_live_matches_job,
                     trigger='interval',
-                    minutes=2 # Or your desired interval
+                    minutes=1 # Or your desired interval
                 )
         else:
                 print(f"Job '{primary_job_id}' already scheduled.")
