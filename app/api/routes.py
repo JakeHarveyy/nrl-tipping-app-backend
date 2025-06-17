@@ -1,5 +1,5 @@
 # app/api/routes.py
-from flask import request, redirect, url_for, session, current_app
+from flask import request, redirect, url_for, session, current_app, Response, stream_with_context
 from flask_restful import Resource, reqparse
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from app.models import Round, Match, User, Bet, BankrollHistory
@@ -10,6 +10,7 @@ import secrets
 from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
 from .settlement import settle_bets_for_match
+from app.sse_events import sse_event_stream_generator
 
 
 class RoundListResource(Resource): # Ensure it inherits from Resource
@@ -74,14 +75,6 @@ class MatchResource(Resource): # Ensure it inherits from Resource
          """Get details for a specific match"""
          match = Match.query.get_or_404(match_id)
          return {'match': match.to_dict()}, 200
-
-# This function ADDS routes to the api object passed in from create_app
-def initialize_routes(api): # Ensure 'api' parameter is used
-    # Check paths carefully for typos!
-    api.add_resource(RoundListResource, '/api/rounds')
-    api.add_resource(MatchListResource, '/api/matches', '/api/matches/upcoming') # Check these paths
-    api.add_resource(MatchResource, '/api/matches/<int:match_id>') # Check this path
-    print("--- API Routes Initialized ---") # Add a print statement here
 
 # --- Argument Parsers (using reqparse for simplicity now) ---
 # Consider Marshmallow or Pydantic for more robust validation later
@@ -652,7 +645,7 @@ class GlobalLeaderboard(Resource):
 
 # --- Function to add all routes ---
 
-def initialize_routes(api):
+def initialize_routes(app, api):
     # Existing Match/Round routes
     api.add_resource(RoundListResource, '/api/rounds')
     api.add_resource(MatchListResource, '/api/matches', '/api/matches/upcoming')
@@ -681,6 +674,16 @@ def initialize_routes(api):
 
     # Add Leaderboard route
     api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
+
+    # --- Add SSE Route directly to app ---
+    @app.route('/api/stream/updates')
+    def sse_stream():
+        # stream_with_context is important for generators with app context needs
+        # though our current generator is simple and might not need it explicitly
+        # if it doesn't access current_app or g.
+        return Response(stream_with_context(sse_event_stream_generator()), mimetype='text/event-stream')
+
+    print("---API AND SSE ROUTES INITIALISED---")
 
      # Keep for debugging startup
 

@@ -14,6 +14,7 @@ from app.config import config_by_name
 from apscheduler.jobstores.base import JobLookupError
 import random
 from datetime import datetime, timezone, timedelta
+from app.sse_events import announce_event
 
 import logging # Use logging
 log = logging.getLogger(__name__)
@@ -98,6 +99,7 @@ def check_and_process_rounds_job():
 # --- High-Frequency Job for a Single Match ---
 def scrape_specific_match_result_job(match_id_to_scrape):
     app = scheduler.app # Get app instance from scheduler
+
     with app.app_context():
         job_log_prefix = f"[Scrape Job MatchID:{match_id_to_scrape}]" # For clearer logs
         log.info(f"{job_log_prefix} Running.")
@@ -128,8 +130,6 @@ def scrape_specific_match_result_job(match_id_to_scrape):
                 'home_team': match.home_team,
                 'away_team': match.away_team,
                 'start_time': match.start_time,
-                # Add external_id if you plan to store and use it for matching
-                # 'external_id': match.external_match_id
             }
 
             # Call the results scraper service function
@@ -144,9 +144,19 @@ def scrape_specific_match_result_job(match_id_to_scrape):
 
             # update match status if live , postponed, cancelled
             if status == 'Live':
+                # Announce score/status update
+                announce_event('score_update', {
+                    'match_id': match.match_id,
+                    'status': 'Live',
+                    'home_score': home_score,
+                    'away_score': away_score
+                })
+
                 log.info(f"{job_log_prefix} Match status is Live. Updating scores if changed.")
                 needs_commit = False
+
                 if match.status != 'Live':
+                    log.info(f"{job_log_prefix} DB Status changing from '{match.status}' to 'Live'.")
                     match.status = 'Live'
                     needs_commit = True
                 # Update scores if they are provided and different
@@ -172,13 +182,22 @@ def scrape_specific_match_result_job(match_id_to_scrape):
                      # Call settlement logic (settle_bets_for_match also updates match status/scores)
                      success, msg = settle_bets_for_match(match.match_id, home_score, away_score)
                      if success:
-                          log.info(f"{job_log_prefix} Settlement successful. Removing job.")
-                          try: scheduler.remove_job(f'scrape_match_{match_id_to_scrape}')
-                          except JobLookupError: log.warning(f"{job_log_prefix} Job removal failed (already removed?).")
+                        announce_event('match_finished', {
+                            'match_id': match.match_id,
+                            'status': 'Completed', # Or 'Finished'
+                            'home_score': home_score, # Final scores
+                            'away_score': away_score,
+                            'winner': match.winner # Winner from settlement
+                        })
+                        log.info(f"{job_log_prefix} Settlement successful. Removing job.")
+                        try: scheduler.remove_job(f'scrape_match_{match_id_to_scrape}')
+                        except JobLookupError: log.warning(f"{job_log_prefix} Job removal failed (already removed?).")
                      else:
                           log.error(f"{job_log_prefix} Settlement FAILED: {msg}. Job will retry.")
                 else:
                      log.warning(f"{job_log_prefix} Match 'Finished' but scores invalid ({home_score}-{away_score}). Settlement skipped, job will retry.")
+
+                
 
             # Handle removal for other terminal states if status was just updated
             if status in ['Postponed', 'Cancelled'] and original_db_status != status:
@@ -268,7 +287,7 @@ def create_app(config_name=None):
 
     api = Api(app)
     from app.api.routes import initialize_routes
-    initialize_routes(api) # Add all your API resources
+    initialize_routes(app, api) # Add all your API resources
     app.logger.info("--- Flask-RESTful API Routes Initialized ---")
 
     # --- Schedule Jobs ---
@@ -279,7 +298,7 @@ def create_app(config_name=None):
             print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
             scheduler.add_job(
                 id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=5 # Or your desired interval
+                trigger='interval', minutes=10 # Or your desired interval
             )
     else:
             print(f"Job '{job_id_rounds}' already scheduled.")
@@ -295,7 +314,7 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=5 # Or your desired interval
+                minutes=10 # Or your desired interval
             )
         else:
             print(f"Job '{odds_job_id}' already scheduled.")
@@ -330,4 +349,5 @@ def create_app(config_name=None):
         app.logger.info("----------------------------------------------------------")
 
     app.logger.info("--- App Creation Complete ---")
+
     return app
