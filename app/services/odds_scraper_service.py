@@ -8,6 +8,10 @@ from datetime import datetime, timezone, timedelta
 from app.models import Match, Round
 from app import db
 from app.utils.text_utils import normalize_team_name
+from app.sse_events import announce_event
+import logging
+
+log = logging.getLogger(__name__)
 
 PINNACLE_API_URL = "https://www.pinnacle.com/config/app.json"
 PINNACLE_MATCHUPS_URL = "https://guest.api.arcadia.pinnacle.com/0.1/leagues/1654/matchups?brandId=0"
@@ -188,6 +192,32 @@ def fetch_pinnacle_nrl_data():
             processed_matches.append(match_info)
             # print(f"Processed Match: {match_info}") # Debugging
 
+            # # # --- TEMPORARY OVERRIDE FOR TESTING ODDS UPDATE ---
+            # # # Define the match you want to change and the new odds
+            # test_match_home_team_canonical = "New Zealand Warriors" # Use the canonical name stored in your DB
+            # test_match_away_team_canonical = "Penrith Panthers"
+            # new_test_home_odds = Decimal("1.99") # New odds
+            # new_test_away_odds = Decimal("10.00") # Optional: change away odds too
+
+            # found_and_overridden = False
+            # for match in processed_matches:
+            #     # Compare against the already normalized names in 'match'
+            #     if match['home_team'] == test_match_home_team_canonical and \
+            #     match['away_team'] == test_match_away_team_canonical:
+            #         log.warning(f"TESTING OVERRIDE: Modifying odds for {match['home_team']} vs {match['away_team']}.")
+            #         log.warning(f"  Old odds: H={match['home_odds']}, A={match['away_odds']}")
+            #         match['home_odds'] = new_test_home_odds
+            #         match['away_odds'] = new_test_away_odds # If changing away too
+            #         log.warning(f"  New odds: H={match['home_odds']}, A={match['away_odds']}")
+            #         found_and_overridden = True
+            #         break # Found and modified, no need to continue loop for override
+
+            # if not found_and_overridden:
+            #     log.warning(f"TESTING OVERRIDE: Did not find {test_match_home_team_canonical} vs {test_match_away_team_canonical} in Pinnacle data to override odds.")
+            # # # --- END TEMPORARY OVERRIDE ---
+
+
+
     except Exception as e:
         print(f"An unexpected error occurred during Pinnacle data fetch: {e}")
         import traceback
@@ -210,8 +240,9 @@ def update_matches_from_odds_scraper():
         print("No matches returned from Pinnacle scraper for odds update.")
         return
 
-    matches_odds_updated = 0
+    matches_odds_updated_count = 0
     matches_not_found_in_db = 0
+    updated_match_details_for_sse = [] # Collect details of matches whose odds changed
 
     for pinnacle_match_data in scraped_pinnacle_matches:
         try:
@@ -248,7 +279,10 @@ def update_matches_from_odds_scraper():
                     break
 
             if found_db_match:
+                original_home_odds = found_db_match.home_odds
+                original_away_odds = found_db_match.away_odds
                 update_needed = False
+                
                 if (p_home_odds is not None and found_db_match.home_odds != p_home_odds) or \
                    (p_home_odds is None and found_db_match.home_odds is not None):
                     found_db_match.home_odds = p_home_odds
@@ -263,8 +297,18 @@ def update_matches_from_odds_scraper():
                     # Store Pinnacle's external_id if you want
                     found_db_match.external_match_id = pinnacle_match_data.get('external_id')
                     db.session.add(found_db_match)
-                    matches_odds_updated += 1
+                    matches_odds_updated_count += 1
                     print(f"Updated odds for DB Match ID {found_db_match.match_id} ({found_db_match.home_team} vs {found_db_match.away_team}) using Pinnacle data.")
+
+                    # --- ADDED: Collect details for SSE event ---
+                    updated_match_details_for_sse.append({
+                        'match_id': found_db_match.match_id,
+                        'home_odds': float(found_db_match.home_odds) if found_db_match.home_odds else None,
+                        'away_odds': float(found_db_match.away_odds) if found_db_match.away_odds else None,
+                        # Optionally include other identifiers if useful for frontend
+                        # 'home_team': found_db_match.home_team,
+                        # 'away_team': found_db_match.away_team
+                    })
             else:
                 print(f"Could not find DB match for Pinnacle: {norm_p_home} vs {norm_p_away} around {p_start_time_dt}")
                 matches_not_found_in_db +=1
@@ -274,9 +318,18 @@ def update_matches_from_odds_scraper():
             db.session.rollback()
             continue
     try:
-        db.session.commit()
+        if matches_odds_updated_count > 0 or updated_match_details_for_sse: # Check if any actual DB adds were made
+            db.session.commit()
+            log.info(f"DB Commit successful for odds update. {matches_odds_updated_count} matches affected.")
+            # --- ADDED: Announce SSE events AFTER successful commit ---
+            for detail in updated_match_details_for_sse:
+                announce_event('odds_update', detail)
+            # -------------------------------------------------------
+        else:
+            log.info("No odds changes detected that required a database commit.")
+
     except Exception as e:
         db.session.rollback()
-        print(f"DB Commit failed for odds update: {e}", exc_info=True)
+        log.error(f"DB Commit failed for odds update: {e}", exc_info=True)
 
-    print(f"--- Finished Odds Update from Pinnacle. Odds Updated: {matches_odds_updated}, Matches Not Found: {matches_not_found_in_db} ---")
+    log.info(f"--- Finished Odds Update from Pinnacle. Odds Updated: {matches_odds_updated_count}, Matches Not Found: {matches_not_found_in_db} ---")

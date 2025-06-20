@@ -2,6 +2,10 @@ from app.models import User, BankrollHistory, Round
 from app import db
 from decimal import Decimal
 from datetime import datetime, timezone
+from app.sse_events import announce_event
+import logging
+
+log = logging.getLogger(__name__)
 
 def process_round_start(round_obj: Round):
     """
@@ -11,13 +15,15 @@ def process_round_start(round_obj: Round):
     - Returns True if successful, False otherwise.
     """
     if not round_obj:
-        print("ERROR: process_round_start called with None round_obj")
+        log.info("ERROR: process_round_start called with None round_obj")
         return False
 
     round_number = round_obj.round_number
-    print(f"--- Processing Start of Round {round_number} ---")
+    log.info(f"--- Processing Start of Round {round_number} ---")
 
     users = User.query.filter_by(active=True).all()
+    
+
     if not users:
         print(f"No active users found for Round {round_number} start.")
         return True # Not an error if no users exist
@@ -62,8 +68,16 @@ def process_round_start(round_obj: Round):
             db.session.add(history_entry)
             # Commit per user to isolate failures, though less performant for many users
             db.session.commit()
-            print(f"Applied bonus for user {user.username} (ID: {user.user_id}). New balance: {new_balance}")
+            log.info(f"Applied bonus for user {user.username} (ID: {user.user_id}). New balance: {new_balance}")
             success_count += 1
+
+            # --- Announce bankroll update AFTER successful commit ---
+            announce_event('bankroll_update', {
+                'user_id': user.user_id,
+                'new_bankroll': float(new_balance),
+                'reason': 'weekly_bonus',
+                'round_number': round_number
+            })
 
         except Exception as e:
             db.session.rollback()

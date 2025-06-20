@@ -328,7 +328,7 @@ def create_app(config_name=None):
                     id=primary_job_id, 
                     func=check_for_live_matches_job,
                     trigger='interval',
-                    minutes=1 # Or your desired interval
+                    minutes=0.25 # Or your desired interval
                 )
         else:
                 print(f"Job '{primary_job_id}' already scheduled.")

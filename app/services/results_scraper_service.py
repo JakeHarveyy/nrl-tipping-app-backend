@@ -114,10 +114,10 @@ def fetch_match_result(match_identifier_details: dict):
         scraped_away = fixture.get('awayTeam', {}).get('nickName', '').strip()
         scraped_kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
 
-        # --- TEMPORARY TEST OVERRIDE ---
-        # Check if this is our specific test match (Wests Tigers vs Raiders in Round 16, 2025)
-        # You might need to adjust based on the exact canonical names after normalization
-        is_test_match = (db_home_team == "Wests Tigers" and db_away_team == "Raiders" and
+        # # --- TEMPORARY TEST OVERRIDE ---
+        # # Check if this is our specific test match (Wests Tigers vs Raiders in Round 16, 2025)
+        # # You might need to adjust based on the exact canonical names after normalization
+        is_test_match = (db_home_team == "Roosters" and db_away_team == "Cowboys" and
                          db_round == 16 and db_year == 2025)
 
         if is_test_match:
@@ -133,7 +133,7 @@ def fetch_match_result(match_identifier_details: dict):
                 "clock": {"kickOffTimeLong": db_start_time.isoformat().replace('+00:00', 'Z')} # Use DB start time
             }
             break # Found our forced match
-        # --- END TEMPORARY TEST OVERRIDE ---
+        # # --- END TEMPORARY TEST OVERRIDE ---
 
         # --- Matching Logic ---
         # Compare case-insensitively for robustness
