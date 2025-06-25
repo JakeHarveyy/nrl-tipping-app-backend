@@ -272,7 +272,13 @@ def create_app(config_name=None):
     oauth.init_app(app)
     scheduler.init_app(app) # Initialize scheduler first
     scheduler.start()
-    CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
+
+    frontend_url = app.config.get('FRONTEND_URL', 'http://localhost:5173') # Default for local
+    allowed_origins = [frontend_url, "http://localhost:5173", "http://127.0.0.1:5173"]
+    # Remove duplicates if frontend_url is one of the localhost ones during dev
+    allowed_origins = list(set(allowed_origins))
+
+    CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
 
     # Register Google OAuth client with Authlib
     oauth.register(
@@ -298,7 +304,7 @@ def create_app(config_name=None):
             print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
             scheduler.add_job(
                 id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=10 # Or your desired interval
+                trigger='interval', minutes=720 # Or your desired interval
             )
     else:
             print(f"Job '{job_id_rounds}' already scheduled.")
@@ -314,7 +320,7 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=10 # Or your desired interval
+                minutes=60 # Or your desired interval
             )
         else:
             print(f"Job '{odds_job_id}' already scheduled.")
@@ -328,7 +334,7 @@ def create_app(config_name=None):
                     id=primary_job_id, 
                     func=check_for_live_matches_job,
                     trigger='interval',
-                    minutes=0.25 # Or your desired interval
+                    minutes=0.5 # Or your desired interval
                 )
         else:
                 print(f"Job '{primary_job_id}' already scheduled.")
