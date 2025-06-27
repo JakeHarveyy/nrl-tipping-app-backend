@@ -244,7 +244,7 @@ def check_for_live_matches_job():
                         func=scrape_specific_match_result_job,
                         args=[match.match_id],
                         trigger='interval',
-                        minutes=1, # High frequency
+                        minutes=0.5, # High frequency
                         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=random.randint(3,10)) # Stagger start slightly
                     )
                 # else: Job already exists, let it run its course
@@ -273,11 +273,22 @@ def create_app(config_name=None):
     scheduler.init_app(app) # Initialize scheduler first
     scheduler.start()
 
-    frontend_url = app.config.get('FRONTEND_URL', 'http://localhost:5173') # Default for local
-    allowed_origins = [frontend_url, "http://localhost:5173", "http://127.0.0.1:5173"]
-    # Remove duplicates if frontend_url is one of the localhost ones during dev
-    allowed_origins = list(set(allowed_origins))
+    frontend_url = app.config.get('FRONTEND_URL') 
 
+    local_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173"
+    ]
+
+    allowed_origins = local_origins
+    
+    if frontend_url:
+        app.logger.info(f"Adding production FRONTEND_URL to CORS origins: {frontend_url}")
+        allowed_origins.append(frontend_url)
+    else:
+        app.logger.warning("FRONTEND_URL environment variable not set. Production CORS might fail.")
+
+    # Initialize CORS with the final list of origins
     CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
 
     # Register Google OAuth client with Authlib
@@ -334,7 +345,7 @@ def create_app(config_name=None):
                     id=primary_job_id, 
                     func=check_for_live_matches_job,
                     trigger='interval',
-                    minutes=0.5 # Or your desired interval
+                    minutes=10 # Or your desired interval
                 )
         else:
                 print(f"Job '{primary_job_id}' already scheduled.")
