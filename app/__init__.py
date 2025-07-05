@@ -384,7 +384,7 @@ def create_app(config_name=None):
             id=job_id_rounds, 
             func=check_and_process_rounds_job,
             trigger='interval', 
-            minutes=0.5, # Or your desired interval
+            minutes=720, # Or your desired interval
             replace_existing=True
         )
     else:
@@ -426,9 +426,9 @@ def create_app(config_name=None):
     from app.services.ai_prediction_service import run_ai_predictions_for_round 
     ai_job_id = 'ai_prediction_job'
     if not scheduler.get_job(ai_job_id):
-        print(f"Scheduling job '{ai_job_id}' to run in 2 minutes for testing.")
-        # Schedule to run in 2 minutes for immediate testing
-        next_run = datetime.now(timezone.utc) + timedelta(minutes=1)
+        print(f"Scheduling job '{ai_job_id}' to run in 5 minutes for testing.")
+        # Schedule to run in 5 minutes for immediate testing
+        next_run = datetime.now(timezone.utc) + timedelta(minutes=5)
         scheduler.add_job(
             id=ai_job_id,
             func=ai_prediction_job,
