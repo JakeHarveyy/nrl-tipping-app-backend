@@ -22,6 +22,12 @@ class DevelopmentConfig(Config):
 
 class ProductionConfig(Config):
     DEBUG = False
+    # Heroku provides DATABASE_URL but it might use postgres:// instead of postgresql://
+    # Fix the URL format for SQLAlchemy 1.4+
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url and database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    SQLALCHEMY_DATABASE_URI = database_url
     # Add production-specific settings here
 
 # You might add TestingConfig later
@@ -29,5 +35,6 @@ class ProductionConfig(Config):
 # Dictionary to access configs by name
 config_by_name = dict(
     development=DevelopmentConfig,
-    prod=ProductionConfig
+    prod=ProductionConfig,
+    production=ProductionConfig  # Heroku might use "production"
 )

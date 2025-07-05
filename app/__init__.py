@@ -425,16 +425,15 @@ def create_app(config_name=None):
         from app.services.ai_prediction_service import run_ai_predictions_for_round 
         ai_job_id = 'ai_prediction_job'
         if not scheduler.get_job(ai_job_id):
-            print(f"Scheduling job '{ai_job_id}' to run at 02:55:00.")
-            # Schedule to run at 02:55:00 for testing
+            print(f"Scheduling job '{ai_job_id}' to run in 2 minutes for testing.")
+            # Schedule to run in 2 minutes for immediate testing
+            next_run = datetime.now(timezone.utc) + timedelta(minutes=2)
             scheduler.add_job(
                 id=ai_job_id,
                 func=ai_prediction_job,
-                trigger='cron',
-                hour=2,
-                minute=55,
-                second=0,
-                replace_existing=True  # This prevents duplicate jobs
+                trigger='date',
+                run_date=next_run,
+                replace_existing=True
             )
         else:
             print(f"Job '{ai_job_id}' already scheduled.")
@@ -443,12 +442,13 @@ def create_app(config_name=None):
         from app.services.historical_data_updater import auto_update_after_round_completion
         update_job_id = 'historical_data_update_job'
         if not scheduler.get_job(update_job_id):
-            print(f"Scheduling job '{update_job_id}' to run daily at 03:00:00.")
-            # Schedule to run daily at 3 AM to update historical data with completed matches
+            print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 03:00:00.")
+            # Schedule to run weekly on Tuesdays at 3 AM to update historical data with completed matches
             scheduler.add_job(
                 id=update_job_id,
                 func=lambda: app.app_context().push() or auto_update_after_round_completion(),
                 trigger='cron',
+                day_of_week='tue',  # Tuesday
                 hour=3,
                 minute=0,
                 second=0,
