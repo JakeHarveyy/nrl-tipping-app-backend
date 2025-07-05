@@ -383,7 +383,7 @@ def create_app(config_name=None):
             print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
             scheduler.add_job(
                 id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=720, # Or your desired interval
+                trigger='interval', minutes=0.5, # Or your desired interval
                 replace_existing=True
             )
         else:
@@ -427,7 +427,7 @@ def create_app(config_name=None):
         if not scheduler.get_job(ai_job_id):
             print(f"Scheduling job '{ai_job_id}' to run in 2 minutes for testing.")
             # Schedule to run in 2 minutes for immediate testing
-            next_run = datetime.now(timezone.utc) + timedelta(minutes=2)
+            next_run = datetime.now(timezone.utc) + timedelta(minutes=4)
             scheduler.add_job(
                 id=ai_job_id,
                 func=ai_prediction_job,

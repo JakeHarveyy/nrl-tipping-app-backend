@@ -1,7 +1,5 @@
 # nrl-tipping-app/docker-compose.yml
 
-version: '3.8' # Specifies the file format version
-
 services:     # Defines the containers/services to run
   db:         # A custom name for our database service (you can call it something else)
     image: postgres:15  # Use the official PostgreSQL image, version 15 (recommended over 'latest')
