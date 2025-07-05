@@ -439,6 +439,24 @@ def create_app(config_name=None):
         else:
             print(f"Job '{ai_job_id}' already scheduled.")
 
+        # --- Schedule Historical Data Update Job ---
+        from app.services.historical_data_updater import auto_update_after_round_completion
+        update_job_id = 'historical_data_update_job'
+        if not scheduler.get_job(update_job_id):
+            print(f"Scheduling job '{update_job_id}' to run daily at 03:00:00.")
+            # Schedule to run daily at 3 AM to update historical data with completed matches
+            scheduler.add_job(
+                id=update_job_id,
+                func=lambda: app.app_context().push() or auto_update_after_round_completion(),
+                trigger='cron',
+                hour=3,
+                minute=0,
+                second=0,
+                replace_existing=True
+            )
+        else:
+            print(f"Job '{update_job_id}' already scheduled.")
+
         # Start the scheduler AFTER all jobs have been added
         if not scheduler.running:
             try:
