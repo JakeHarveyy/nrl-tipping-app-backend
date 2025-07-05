@@ -375,99 +375,99 @@ def create_app(config_name=None):
 
     # --- Schedule Jobs ---
     
-    # Only schedule jobs if not in debug mode (to avoid duplicate jobs from reloader)
-    if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        # Round Management Job
-        job_id_rounds = 'round_management_job'
-        if not scheduler.get_job(job_id_rounds):
-            print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
-            scheduler.add_job(
-                id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=0.5, # Or your desired interval
-                replace_existing=True
-            )
-        else:
-            print(f"Job '{job_id_rounds}' already scheduled.")
-
-        # --- Schedule Odds Scraper Job ---
-        from app.services.odds_scraper_service import update_matches_from_odds_scraper
-
-        odds_job_id = 'odds_update_job'
-        if app.config.get("ENV") != "testing":
-            if not scheduler.get_job(odds_job_id):
-                print(f"Scheduling job '{odds_job_id}'.")
-                scheduler.add_job(
-                    id=odds_job_id,
-                    func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
-                    trigger='interval', 
-                    minutes=0.25, # Or your desired interval
-                    replace_existing=True
-                )
-            else:
-                print(f"Job '{odds_job_id}' already scheduled.")
-
-        # --- Schedule live match Check Job ---
-        primary_job_id = 'live_match_check_job'
-        if app.config.get("ENV") != "testing":
-            if not scheduler.get_job(primary_job_id):
-                print(f"Scheduling job '{primary_job_id}'.")
-                scheduler.add_job(
-                    id=primary_job_id, 
-                    func=check_for_live_matches_job,
-                    trigger='interval',
-                    minutes=10, # Or your desired interval
-                    replace_existing=True
-                )
-            else:
-                print(f"Job '{primary_job_id}' already scheduled.")
-
-        # --- Schedule AI Prediction Job ---
-        from app.services.ai_prediction_service import run_ai_predictions_for_round 
-        ai_job_id = 'ai_prediction_job'
-        if not scheduler.get_job(ai_job_id):
-            print(f"Scheduling job '{ai_job_id}' to run in 2 minutes for testing.")
-            # Schedule to run in 2 minutes for immediate testing
-            next_run = datetime.now(timezone.utc) + timedelta(minutes=4)
-            scheduler.add_job(
-                id=ai_job_id,
-                func=ai_prediction_job,
-                trigger='date',
-                run_date=next_run,
-                replace_existing=True
-            )
-        else:
-            print(f"Job '{ai_job_id}' already scheduled.")
-
-        # --- Schedule Historical Data Update Job ---
-        from app.services.historical_data_updater import auto_update_after_round_completion
-        update_job_id = 'historical_data_update_job'
-        if not scheduler.get_job(update_job_id):
-            print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 03:00:00.")
-            # Schedule to run weekly on Tuesdays at 3 AM to update historical data with completed matches
-            scheduler.add_job(
-                id=update_job_id,
-                func=lambda: app.app_context().push() or auto_update_after_round_completion(),
-                trigger='cron',
-                day_of_week='tue',  # Tuesday
-                hour=3,
-                minute=0,
-                second=0,
-                replace_existing=True
-            )
-        else:
-            print(f"Job '{update_job_id}' already scheduled.")
-
-        # Start the scheduler AFTER all jobs have been added
-        if not scheduler.running:
-            try:
-                scheduler.start()
-                app.logger.info("Scheduler started successfully.")
-            except Exception as e:
-                app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
-        else:
-            app.logger.info("Scheduler already running.")
+    
+    # Round Management Job
+    job_id_rounds = 'round_management_job'
+    if not scheduler.get_job(job_id_rounds):
+        print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
+        scheduler.add_job(
+            id=job_id_rounds, 
+            func=check_and_process_rounds_job,
+            trigger='interval', 
+            minutes=0.5, # Or your desired interval
+            replace_existing=True
+        )
     else:
-        app.logger.info("Skipping job scheduling in debug mode (reloader process).")
+        print(f"Job '{job_id_rounds}' already scheduled.")
+
+    # --- Schedule Odds Scraper Job ---
+    from app.services.odds_scraper_service import update_matches_from_odds_scraper
+
+    odds_job_id = 'odds_update_job'
+    if app.config.get("ENV") != "testing":
+        if not scheduler.get_job(odds_job_id):
+            print(f"Scheduling job '{odds_job_id}'.")
+            scheduler.add_job(
+                id=odds_job_id,
+                func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
+                trigger='interval', 
+                minutes=0.25, # Or your desired interval
+                replace_existing=True
+            )
+        else:
+            print(f"Job '{odds_job_id}' already scheduled.")
+
+    # --- Schedule live match Check Job ---
+    primary_job_id = 'live_match_check_job'
+    if app.config.get("ENV") != "testing":
+        if not scheduler.get_job(primary_job_id):
+            print(f"Scheduling job '{primary_job_id}'.")
+            scheduler.add_job(
+                id=primary_job_id, 
+                func=check_for_live_matches_job,
+                trigger='interval',
+                minutes=10, # Or your desired interval
+                replace_existing=True
+            )
+        else:
+            print(f"Job '{primary_job_id}' already scheduled.")
+
+    # --- Schedule AI Prediction Job ---
+    from app.services.ai_prediction_service import run_ai_predictions_for_round 
+    ai_job_id = 'ai_prediction_job'
+    if not scheduler.get_job(ai_job_id):
+        print(f"Scheduling job '{ai_job_id}' to run in 2 minutes for testing.")
+        # Schedule to run in 2 minutes for immediate testing
+        next_run = datetime.now(timezone.utc) + timedelta(minutes=1)
+        scheduler.add_job(
+            id=ai_job_id,
+            func=ai_prediction_job,
+            trigger='date',
+            run_date=next_run,
+            replace_existing=True
+        )
+    else:
+        print(f"Job '{ai_job_id}' already scheduled.")
+
+    # --- Schedule Historical Data Update Job ---
+    from app.services.historical_data_updater import auto_update_after_round_completion
+    update_job_id = 'historical_data_update_job'
+    if not scheduler.get_job(update_job_id):
+        print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 03:00:00.")
+        # Schedule to run weekly on Tuesdays at 3 AM to update historical data with completed matches
+        scheduler.add_job(
+            id=update_job_id,
+            func=lambda: app.app_context().push() or auto_update_after_round_completion(),
+            trigger='cron',
+            day_of_week='tue',  # Tuesday
+            hour=3,
+            minute=0,
+            second=0,
+            replace_existing=True
+        )
+    else:
+        print(f"Job '{update_job_id}' already scheduled.")
+
+    # Start the scheduler AFTER all jobs have been added
+    if not scheduler.running:
+        try:
+            scheduler.start()
+            app.logger.info("Scheduler started successfully.")
+        except Exception as e:
+            app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
+    else:
+        app.logger.info("Scheduler already running.")
+    
     # --- End Job Scheduling ---
 
     if app.debug or os.environ.get("FLASK_ENV") == "development":
