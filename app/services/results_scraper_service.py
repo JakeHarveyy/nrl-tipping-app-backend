@@ -276,6 +276,8 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
             home_team_name = fixture.get('homeTeam', {}).get('nickName', '').strip()
             away_team_name = fixture.get('awayTeam', {}).get('nickName', '').strip()
             kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
+            venue = fixture.get('venue', '').strip()
+            venue_city = fixture.get('venueCity', '').strip()
 
             if not all([home_team_name, away_team_name, kickoff_str]):
                 log.warning(f"Skipping fixture due to missing team names or kickoff time: {fixture.get('matchCentreUrl', 'N/A')}")
@@ -297,12 +299,14 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
             current_schedule_status = parse_match_status(fixture.get('matchMode'), fixture.get('matchState'))
 
             if not db_match:
-                log.info(f"Creating new match from NRL.com: {home_team_name} vs {away_team_name} for Round {parsed_round_number}")
+                log.info(f"Creating new match from NRL.com: {home_team_name} vs {away_team_name} at {venue or 'TBD'}, {venue_city or 'TBD'} for Round {parsed_round_number}")
                 db_match = Match(
                     round_id=round_obj.round_id,
                     home_team=home_team_name,
                     away_team=away_team_name,
                     start_time=start_time_dt,
+                    venue=venue if venue else None,
+                    venue_city=venue_city if venue_city else None,
                     status=current_schedule_status if current_schedule_status != 'Unknown' else 'Scheduled',
                 )
                 db.session.add(db_match)
@@ -318,6 +322,17 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                 if db_match.start_time != start_time_dt:
                     log.info(f"Updating start_time for {home_team_name} vs {away_team_name} from {db_match.start_time} to {start_time_dt}")
                     db_match.start_time = start_time_dt
+                    update_this_match = True
+                
+                # Update venue information if it has changed
+                if venue and db_match.venue != venue:
+                    log.info(f"Updating venue for {home_team_name} vs {away_team_name} from '{db_match.venue}' to '{venue}'")
+                    db_match.venue = venue
+                    update_this_match = True
+                
+                if venue_city and db_match.venue_city != venue_city:
+                    log.info(f"Updating venue_city for {home_team_name} vs {away_team_name} from '{db_match.venue_city}' to '{venue_city}'")
+                    db_match.venue_city = venue_city
                     update_this_match = True
                 
                 # Update status from schedule if it's a non-terminal, relevant update

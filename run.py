@@ -6,6 +6,7 @@ from app import create_app, db # <--- Ensure db is imported
 from app.models import Round, Match # <--- Ensure models are imported
 from app.services.results_scraper_service import populate_schedule_from_nrl_com
 import click
+from app.models import User
 
 
 # Get config name from environment variable or default to 'dev'
@@ -29,6 +30,33 @@ def populate_schedule(start_round, end_round, year):
             print(f"ERROR during schedule population: {e}")
             import traceback
             traceback.print_exc()
+
+@app.cli.command("create-bot")
+@click.argument('username', default='LogisticsRegressionBot')
+def create_bot(username):
+    """Creates the AI Bot user if it doesn't exist."""
+    with app.app_context():
+        if User.find_by_username(username):
+            print(f"Bot user '{username}' already exists.")
+            return
+
+        print(f"Creating AI Bot user: '{username}'...")
+        bot_user = User(
+            username=username,
+            email=f"{username.lower()}@bot.local", # Use a fake local email
+            is_bot=True, # Set the bot flag
+            # Bots don't need passwords or Google IDs
+            password_hash=None,
+            is_email_verified=True, # Assume verified
+            bankroll=1000.00 # Set initial bankroll
+        )
+        try:
+            bot_user.save_to_db()
+            # You might want to log the initial deposit in BankrollHistory here too
+            # (similar to the UserRegister logic)
+            print(f"Bot user '{username}' created successfully with ID {bot_user.user_id}.")
+        except Exception as e:
+            print(f"Error creating bot user: {e}")
 
 
 # --- Main execution ---

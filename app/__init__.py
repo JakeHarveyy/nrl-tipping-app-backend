@@ -253,8 +253,75 @@ def check_for_live_matches_job():
 
         log.info("--- Live Match Check Job Finished ---")
 
+def run_ai_for_current_round():
+    """Finds the current active/upcoming round and runs the AI service for it."""
+    from app.models import Round
+    from app.services.ai_prediction_service import run_ai_predictions_for_round
+    from datetime import datetime, timezone
+
+    # Find the active round, or the next upcoming one
+    now = datetime.now(timezone.utc)
+    target_round = Round.query.filter_by(status='Active').first()
+    if not target_round:
+        target_round = Round.query.filter(Round.start_date > now).order_by(Round.start_date.asc()).first()
+
+    if target_round:
+        run_ai_predictions_for_round(target_round.round_number, target_round.year)
+    else:
+        log.warning("AI JOB: No active or upcoming round found to make predictions for.")
 
 
+def ai_prediction_job():
+    """
+    Automated AI prediction job that finds the current round and runs predictions.
+    """
+    app = scheduler.app  # Get the app instance
+    with app.app_context():
+        print(f"--- Running AI Prediction Job at {datetime.now(timezone.utc)} ---")
+        from app.models import Round
+        from app.services.ai_prediction_service import run_ai_predictions_for_round
+        
+        # Find the current active round or next upcoming round
+        now = datetime.now(timezone.utc)
+        
+        # First try to find an active round
+        current_round = Round.query.filter(
+            Round.status == 'Active',
+            Round.year == now.year
+        ).first()
+        
+        # If no active round, find the next upcoming round
+        if not current_round:
+            current_round = Round.query.filter(
+                Round.status == 'Upcoming',
+                Round.start_date >= now,
+                Round.year == now.year
+            ).order_by(Round.start_date).first()
+        
+        if current_round:
+            print(f"Running AI predictions for Round {current_round.round_number}, Year {current_round.year}")
+            try:
+                success = run_ai_predictions_for_round(
+                    round_number=current_round.round_number,
+                    year=current_round.year
+                )
+                if success:
+                    print(f"✅ AI predictions completed successfully for Round {current_round.round_number}")
+                    announce_event("ai_predictions_complete", {
+                        "round_number": current_round.round_number,
+                        "year": current_round.year,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+                else:
+                    print(f"❌ AI predictions failed for Round {current_round.round_number}")
+            except Exception as e:
+                print(f"❌ Error running AI predictions: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("⚠️  No suitable round found for AI predictions")
+        
+        print(f"--- AI Prediction Job completed at {datetime.now(timezone.utc)} ---")
 
 def create_app(config_name=None):
     if config_name is None:
@@ -271,7 +338,6 @@ def create_app(config_name=None):
     jwt.init_app(app)
     oauth.init_app(app)
     scheduler.init_app(app) # Initialize scheduler first
-    scheduler.start()
 
     frontend_url = app.config.get('FRONTEND_URL') 
 
@@ -309,54 +375,81 @@ def create_app(config_name=None):
 
     # --- Schedule Jobs ---
     
-    # Round Management Job
-    job_id_rounds = 'round_management_job'
-    if not scheduler.get_job(job_id_rounds):
+    # Only schedule jobs if not in debug mode (to avoid duplicate jobs from reloader)
+    if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        # Round Management Job
+        job_id_rounds = 'round_management_job'
+        if not scheduler.get_job(job_id_rounds):
             print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
             scheduler.add_job(
                 id=job_id_rounds, func=check_and_process_rounds_job,
-                trigger='interval', minutes=720 # Or your desired interval
-            )
-    else:
-            print(f"Job '{job_id_rounds}' already scheduled.")
-
-    # --- Schedule Odds Scraper Job ---
-    from app.services.odds_scraper_service import update_matches_from_odds_scraper
-
-    odds_job_id = 'odds_update_job'
-    if app.config.get("ENV") != "testing":
-        if not scheduler.get_job(odds_job_id):
-            print(f"Scheduling job '{odds_job_id}'.")
-            scheduler.add_job(
-                id=odds_job_id,
-                func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
-                trigger='interval', 
-                minutes=60 # Or your desired interval
+                trigger='interval', minutes=720, # Or your desired interval
+                replace_existing=True
             )
         else:
-            print(f"Job '{odds_job_id}' already scheduled.")
+            print(f"Job '{job_id_rounds}' already scheduled.")
 
-    # --- Schedule live match Check Job ---
-    primary_job_id = 'live_match_check_job'
-    if app.config.get("ENV") != "testing":
-        if not scheduler.get_job(primary_job_id):
+        # --- Schedule Odds Scraper Job ---
+        from app.services.odds_scraper_service import update_matches_from_odds_scraper
+
+        odds_job_id = 'odds_update_job'
+        if app.config.get("ENV") != "testing":
+            if not scheduler.get_job(odds_job_id):
+                print(f"Scheduling job '{odds_job_id}'.")
+                scheduler.add_job(
+                    id=odds_job_id,
+                    func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
+                    trigger='interval', 
+                    minutes=0.25, # Or your desired interval
+                    replace_existing=True
+                )
+            else:
+                print(f"Job '{odds_job_id}' already scheduled.")
+
+        # --- Schedule live match Check Job ---
+        primary_job_id = 'live_match_check_job'
+        if app.config.get("ENV") != "testing":
+            if not scheduler.get_job(primary_job_id):
                 print(f"Scheduling job '{primary_job_id}'.")
                 scheduler.add_job(
                     id=primary_job_id, 
                     func=check_for_live_matches_job,
                     trigger='interval',
-                    minutes=10 # Or your desired interval
+                    minutes=10, # Or your desired interval
+                    replace_existing=True
                 )
-        else:
+            else:
                 print(f"Job '{primary_job_id}' already scheduled.")
 
-    # Start the scheduler AFTER all jobs have been added
-    if not scheduler.running:
-        try:
-            scheduler.start()
-            app.logger.info("Scheduler started successfully.")
-        except Exception as e:
-            app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
+        # --- Schedule AI Prediction Job ---
+        from app.services.ai_prediction_service import run_ai_predictions_for_round 
+        ai_job_id = 'ai_prediction_job'
+        if not scheduler.get_job(ai_job_id):
+            print(f"Scheduling job '{ai_job_id}' to run at 02:55:00.")
+            # Schedule to run at 02:55:00 for testing
+            scheduler.add_job(
+                id=ai_job_id,
+                func=ai_prediction_job,
+                trigger='cron',
+                hour=2,
+                minute=55,
+                second=0,
+                replace_existing=True  # This prevents duplicate jobs
+            )
+        else:
+            print(f"Job '{ai_job_id}' already scheduled.")
+
+        # Start the scheduler AFTER all jobs have been added
+        if not scheduler.running:
+            try:
+                scheduler.start()
+                app.logger.info("Scheduler started successfully.")
+            except Exception as e:
+                app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
+        else:
+            app.logger.info("Scheduler already running.")
+    else:
+        app.logger.info("Skipping job scheduling in debug mode (reloader process).")
     # --- End Job Scheduling ---
 
     if app.debug or os.environ.get("FLASK_ENV") == "development":

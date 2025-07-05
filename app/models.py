@@ -15,6 +15,7 @@ class User(db.Model):
     google_id = db.Column(db.String(255), unique=True, nullable=True, index=True) #for google auth
     bankroll = db.Column(db.Numeric(12, 2), nullable=False, default=Decimal('1000.00'))
     is_email_verified = db.Column(db.Boolean, default=False)
+    is_bot = db.Column(db.Boolean, default=False)
     registration_date = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)) # Use timezone.utc
     last_login = db.Column(db.DateTime(timezone=True), nullable=True)
     active = db.Column(db.Boolean, default=True)
@@ -97,6 +98,8 @@ class Match(db.Model):
     start_time = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
     home_odds = db.Column(db.Numeric(6, 3), nullable=True)
     away_odds = db.Column(db.Numeric(6, 3), nullable=True)
+    venue = db.Column(db.String(255), nullable=True)  # Stadium/venue name
+    venue_city = db.Column(db.String(100), nullable=True)  # City where venue is located
     status = db.Column(db.String(20), nullable=False, default='Scheduled', index=True) # Scheduled, Live, Completed, Postponed, Cancelled
     result_home_score = db.Column(db.Integer, nullable=True)
     result_away_score = db.Column(db.Integer, nullable=True)
@@ -122,6 +125,8 @@ class Match(db.Model):
             'start_time': self.start_time.isoformat() if self.start_time else None,
             'home_odds': float(self.home_odds) if self.home_odds is not None else None,
             'away_odds': float(self.away_odds) if self.away_odds is not None else None,
+            'venue': self.venue,
+            'venue_city': self.venue_city,
             'status': self.status,
             'result_home_score': self.result_home_score,
             'result_away_score': self.result_away_score,
@@ -205,3 +210,36 @@ class BankrollHistory(db.Model):
             'new_balance': float(self.new_balance),
             'timestamp': self.timestamp.isoformat()
         }
+    
+class AIPrediction(db.Model):
+    __tablename__ = 'ai_predictions'
+    prediction_id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
+    match_id = db.Column(db.Integer, db.ForeignKey('matches.match_id'), nullable=False, index=True)
+    
+    # Match details (denormalized for easier querying)
+    home_team = db.Column(db.String(100), nullable=False)
+    away_team = db.Column(db.String(100), nullable=False)
+    match_date = db.Column(db.DateTime(timezone=True), nullable=False)
+    
+    # AI Model predictions
+    home_win_probability = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
+    away_win_probability = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
+    predicted_winner = db.Column(db.String(100), nullable=False)
+    model_confidence = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
+    
+    # Betting recommendation
+    betting_recommendation = db.Column(db.String(100), nullable=False)  # "Bet Team" or "No Bet"
+    recommended_team = db.Column(db.String(100), nullable=True)  # Team to bet on if recommended
+    confidence_level = db.Column(db.String(20), nullable=False)  # "High", "Medium", "Low"
+    kelly_criterion_stake = db.Column(db.Numeric(5, 4), nullable=False)  # Recommended stake percentage
+    
+    # Metadata
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    user = db.relationship('User', backref='ai_predictions')
+    match = db.relationship('Match', backref='ai_predictions')
+
+    def __repr__(self):
+        return f"<AIPrediction {self.prediction_id} Match:{self.match_id} Winner:{self.predicted_winner}>"

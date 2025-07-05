@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from decimal import Decimal, InvalidOperation
 from .settlement import settle_bets_for_match
 from app.sse_events import sse_event_stream_generator
-
+from app.services.betting_service import place_bet_for_user
 
 class RoundListResource(Resource): # Ensure it inherits from Resource
     def get(self):
@@ -411,109 +411,25 @@ class VerifyEmail(Resource):
 # --- Betting Resources ---
 
 class PlaceBet(Resource):
-    @jwt_required() # Protect this endpoint
+    @jwt_required()
     def post(self):
         data = _bet_parser.parse_args()
-        current_user_id = int(get_jwt_identity()) # Identity is string, convert to int
-        user = User.query.get(current_user_id)
-
-        if not user:
-            return {'message': 'User not found'}, 404
-
+        user = User.query.get(int(get_jwt_identity()))
         match = Match.query.get(data['match_id'])
-        if not match:
-            return {'message': 'Match not found'}, 404
+        bet_amount = Decimal(data['amount']) # Convert from string here
 
-        # --- Validations ---
-        # 1. Is match still open for betting?
-        if match.start_time <= datetime.now(timezone.utc):
-            return {'message': 'Betting is closed for this match (match has started or finished).'}, 400
-        if match.status != 'Scheduled':
-             return {'message': f'Match status is "{match.status}", betting only allowed on "Scheduled" matches.'}, 400
+        success, result = place_bet_for_user(
+            user=user,
+            match=match,
+            team_selected=data['team_selected'],
+            bet_amount=bet_amount
+        )
 
-        # 2. Is team selection valid?
-        selected_odds = None
-        if data['team_selected'] == match.home_team:
-            selected_odds = match.home_odds
-        elif data['team_selected'] == match.away_team:
-            selected_odds = match.away_odds
+        if success:
+            return {'message': 'Bet placed successfully!', 'bet_details': result.to_dict()}, 201
         else:
-            return {'message': f"Invalid team selected. Choose '{match.home_team}' or '{match.away_team}'."}, 400
-
-        if selected_odds is None:
-             return {'message': 'Odds not available for the selected team at this time.'}, 400
-
-        # 3. Is amount valid?
-        try:
-            bet_amount = Decimal(data['amount'])
-            if bet_amount <= 0:
-                raise ValueError("Amount must be positive.")
-            # Ensure precision (e.g., allow only 2 decimal places)
-            if bet_amount.as_tuple().exponent < -2:
-                 raise ValueError("Amount cannot have more than two decimal places.")
-        except (ValueError, TypeError) as e:
-             # Catches Decimal conversion errors and explicit ValueErrors
-             print(f"Invalid bet amount format: {data['amount']}. Error: {e}")
-             return {'message': 'Invalid bet amount format. Must be a positive number with up to two decimal places.'}, 400
-
-
-        # 4. Does user have sufficient funds?
-        if user.bankroll < bet_amount:
-            return {'message': f'Insufficient funds. Your balance is ${user.bankroll:.2f}'}, 400
-        # --- End Validations ---
-
-        # --- Calculate Payout ---
-        potential_payout = bet_amount * selected_odds # Decimal multiplication
-
-        # --- Database Transaction ---
-        try:
-            # Start transaction explicitly if needed, or rely on commit/rollback
-            previous_balance = user.bankroll
-            new_balance = previous_balance - bet_amount
-
-            # 1. Update user bankroll
-            user.bankroll = new_balance
-
-            # 2. Create Bet record
-            new_bet = Bet(
-                user_id=user.user_id,
-                match_id=match.match_id,
-                round_id=match.round_id, # Get round_id from the match
-                team_selected=data['team_selected'],
-                amount=bet_amount,
-                odds_at_placement=selected_odds,
-                potential_payout=potential_payout,
-                status='Pending',
-                placement_time=datetime.now(timezone.utc)
-            )
-            db.session.add(new_bet)
-            db.session.flush() # Flush to get new_bet.bet_id if needed now
-
-            # 3. Create BankrollHistory record
-            history_entry = BankrollHistory(
-                user_id=user.user_id,
-                round_number=match.round.round_number, # Get round number from match->round relationship
-                change_type='Bet Placement',
-                related_bet_id=new_bet.bet_id, # Link history to the bet
-                amount_change=-bet_amount, # Negative for placement
-                previous_balance=previous_balance,
-                new_balance=new_balance,
-                timestamp=new_bet.placement_time # Use bet placement time for consistency
-            )
-            db.session.add(history_entry)
-
-            # 4. Commit all changes
-            db.session.commit()
-
-            return {'message': 'Bet placed successfully!', 'bet_details': new_bet.to_dict()}, 201
-
-        except Exception as e:
-            db.session.rollback() # Rollback on any error
-            print(f"ERROR placing bet for user {user.username}: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'message': 'An error occurred placing the bet.'}, 500
-        # --- End Transaction ---
+            # 'result' contains the error message from the service
+            return {'message': result}, 400
 
 
 class UserBetList(Resource):
