@@ -423,7 +423,7 @@ def create_app(config_name=None):
                 id=primary_job_id, 
                 func=check_for_live_matches_job,
                 trigger='interval',
-                minutes=10, # Or your desired interval
+                minutes=30, # Or your desired interval
                 replace_existing=True
             )
         else:
@@ -439,8 +439,11 @@ def create_app(config_name=None):
         scheduler.add_job(
             id=ai_job_id,
             func=ai_prediction_job,
-            trigger='interval',
-            minutes=0.5, # Or your desired interval
+            trigger='cron',
+            day_of_week='wed',  # Tuesday
+            hour=0,
+            minute=0,
+            second=0,
             replace_existing=True
         )
     else:
