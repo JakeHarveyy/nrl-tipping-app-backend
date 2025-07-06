@@ -217,6 +217,7 @@ def run_ai_predictions_for_round(round_number, year):
         return False
         
     temp_csv_path, db_matches = match_data_result
+    log.info(f"Prepared {len(db_matches)} matches for prediction")
     
     # Step 2: Run the complete prediction pipeline
     prediction_df = _run_prediction_pipeline(temp_csv_path)
@@ -244,39 +245,74 @@ def run_ai_predictions_for_round(round_number, year):
             return False
         
         log.info(f"Generated {len(results_df)} AI predictions")
+        log.info(f"Prediction columns: {list(results_df.columns)}")
         
         # Step 4: Store predictions and place bets
+        predictions_stored = 0
         for index, row in results_df.iterrows():
-            # Find corresponding database match using original DB team names
+            log.info(f"Processing prediction {index + 1}/{len(results_df)}: {row.get('Home Team', 'Unknown')} vs {row.get('Away Team', 'Unknown')}")
+            
+            # Convert mapped team names back to database team names for matching
+            home_team_for_db = _map_team_name_from_model(row['Home Team'])
+            away_team_for_db = _map_team_name_from_model(row['Away Team'])
+            
+            log.info(f"Mapped team names for DB matching: {row['Home Team']} -> {home_team_for_db}, {row['Away Team']} -> {away_team_for_db}")
+            
+            # Find corresponding database match using mapped-back team names
             db_match = None
             for match in db_matches:
-                # Match using original database team names, not the mapped ones
-                if (match.home_team == row.get('db_home_team', row['Home Team']) and 
-                    match.away_team == row.get('db_away_team', row['Away Team'])):
+                if (match.home_team == home_team_for_db and 
+                    match.away_team == away_team_for_db):
                     db_match = match
                     break
             
             if not db_match:
-                log.warning(f"Could not find DB match for {row.get('db_home_team', row['Home Team'])} vs {row.get('db_away_team', row['Away Team'])}")
+                log.warning(f"Could not find DB match for {home_team_for_db} vs {away_team_for_db} (mapped from {row['Home Team']} vs {row['Away Team']})")
+                # Debug: Show available matches
+                log.info(f"Available matches in DB: {[(m.home_team, m.away_team) for m in db_matches]}")
+                continue
+            
+            log.info(f"Found matching DB match: {db_match.home_team} vs {db_match.away_team} (ID: {db_match.match_id})")
+            
+            # Check if prediction already exists for this match
+            existing_prediction = AIPrediction.query.filter_by(
+                user_id=ai_bot.user_id,
+                match_id=db_match.match_id
+            ).first()
+            
+            if existing_prediction:
+                log.info(f"AI prediction already exists for match {db_match.home_team} vs {db_match.away_team} (ID: {existing_prediction.prediction_id})")
                 continue
             
             # Store prediction in database using mapped team names for display
-            prediction_entry = AIPrediction(
-                user_id=ai_bot.user_id,
-                match_id=db_match.match_id,
-                home_team=row['Home Team'],  # Use mapped names in predictions table
-                away_team=row['Away Team'],  # Use mapped names in predictions table
-                match_date=db_match.start_time,
-                home_win_probability=row['home_win_probability'],
-                away_win_probability=row['away_win_probability'],
-                predicted_winner=row['predicted_winner'],
-                model_confidence=row['model_confidence'],
-                betting_recommendation=row['betting_recommendation'],
-                recommended_team=row.get('recommended_team'),
-                confidence_level=row['confidence_level'],
-                kelly_criterion_stake=row['kelly_criterion_stake']
-            )
-            db.session.add(prediction_entry)
+            try:
+                prediction_entry = AIPrediction(
+                    user_id=ai_bot.user_id,
+                    match_id=db_match.match_id,
+                    home_team=row['Home Team'],  # Use mapped names in predictions table
+                    away_team=row['Away Team'],  # Use mapped names in predictions table
+                    match_date=db_match.start_time,
+                    home_win_probability=row['home_win_probability'],
+                    away_win_probability=row['away_win_probability'],
+                    predicted_winner=row['predicted_winner'],
+                    model_confidence=row['model_confidence'],
+                    betting_recommendation=row['betting_recommendation'],
+                    recommended_team=row.get('recommended_team'),
+                    confidence_level=row['confidence_level'],
+                    kelly_criterion_stake=row['kelly_criterion_stake']
+                )
+                db.session.add(prediction_entry)
+                predictions_stored += 1
+                log.info(f"Stored AI prediction for {row['Home Team']} vs {row['Away Team']} (Winner: {row['predicted_winner']}, Confidence: {row['model_confidence']:.2f})")
+                
+                # Commit each prediction individually to avoid losing all data on error
+                db.session.commit()
+                log.info(f"Committed prediction {predictions_stored} to database successfully")
+                
+            except Exception as prediction_error:
+                log.error(f"Failed to store/commit prediction: {prediction_error}", exc_info=True)
+                db.session.rollback()
+                continue
             
             # Place bet if recommended
             if row['betting_recommendation'] != 'No Bet' and row['kelly_criterion_stake'] > 0:
@@ -327,15 +363,23 @@ def run_ai_predictions_for_round(round_number, year):
                             else:
                                 log.error(f"Could not map recommended team '{recommended_team_for_bet}' back to database team name")
         
-        # Commit all changes
-        db.session.commit()
-        log.info(f"Successfully completed AI predictions for Round {round_number}, Year {year}")
+        # Final commit and cleanup
+        try:
+            db.session.commit()
+            if predictions_stored > 0:
+                log.info(f"Successfully completed AI predictions for Round {round_number}, Year {year}. Stored {predictions_stored} new predictions.")
+            else:
+                log.info(f"AI predictions for Round {round_number}, Year {year} already exist. No new predictions stored.")
+        except Exception as final_commit_error:
+            log.error(f"Failed final commit: {final_commit_error}")
+            db.session.rollback()
         
         # Cleanup
         if os.path.exists(temp_csv_path):
             os.remove(temp_csv_path)
             
-        return True
+        # Return True if we successfully processed predictions (even if they already existed)
+        return len(results_df) > 0
         
     except Exception as e:
         db.session.rollback()
@@ -347,10 +391,15 @@ def get_ai_predictions_for_round(round_number, year):
     """
     Return AI predictions for frontend display without placing bets.
     """
+    ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
+    if not ai_bot:
+        log.warning(f"AI Bot user '{AI_BOT_USERNAME}' not found for predictions query")
+        return []
+    
     predictions = AIPrediction.query.join(Match).join(Round).filter(
         Round.round_number == round_number,
         Round.year == year,
-        AIPrediction.user_id == User.query.filter_by(username=AI_BOT_USERNAME).first().user_id
+        AIPrediction.user_id == ai_bot.user_id
     ).all()
     
     return [{

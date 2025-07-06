@@ -278,35 +278,38 @@ def ai_prediction_job():
     app = scheduler.app  # Get the app instance
     with app.app_context():
         print(f"--- Running AI Prediction Job at {datetime.now(timezone.utc)} ---")
-        from app.models import Round
-        from app.services.ai_prediction_service import run_ai_predictions_for_round
-        
-        # Find the current active round or next upcoming round
-        now = datetime.now(timezone.utc)
-        
-        # First try to find an active round
-        current_round = Round.query.filter(
-            Round.status == 'Active',
-            Round.year == now.year
-        ).first()
-        
-        # If no active round, find the next upcoming round
-        if not current_round:
+        try:
+            from app.models import Round
+            from app.services.ai_prediction_service import run_ai_predictions_for_round
+            
+            # Find the current active round or next upcoming round
+            now = datetime.now(timezone.utc)
+            
+            # First try to find an active round
             current_round = Round.query.filter(
-                Round.status == 'Upcoming',
-                Round.start_date >= now,
+                Round.status == 'Active',
                 Round.year == now.year
-            ).order_by(Round.start_date).first()
-        
-        if current_round:
-            print(f"Running AI predictions for Round {current_round.round_number}, Year {current_round.year}")
-            try:
+            ).first()
+            
+            # If no active round, find the next upcoming round
+            if not current_round:
+                current_round = Round.query.filter(
+                    Round.status == 'Upcoming',
+                    Round.start_date >= now,
+                    Round.year == now.year
+                ).order_by(Round.start_date).first()
+            
+            if current_round:
+                print(f"Running AI predictions for Round {current_round.round_number}, Year {current_round.year}")
                 success = run_ai_predictions_for_round(
                     round_number=current_round.round_number,
                     year=current_round.year
                 )
                 if success:
-                    print(f"✅ AI predictions completed successfully for Round {current_round.round_number}")
+                    print(f"✅ AI predictions processed successfully for Round {current_round.round_number}")
+                    # Force commit to ensure data is saved
+                    from app import db
+                    db.session.commit()
                     announce_event("ai_predictions_complete", {
                         "round_number": current_round.round_number,
                         "year": current_round.year,
@@ -314,12 +317,16 @@ def ai_prediction_job():
                     })
                 else:
                     print(f"❌ AI predictions failed for Round {current_round.round_number}")
-            except Exception as e:
-                print(f"❌ Error running AI predictions: {e}")
-                import traceback
-                traceback.print_exc()
-        else:
-            print("⚠️  No suitable round found for AI predictions")
+            else:
+                print("⚠️  No suitable round found for AI predictions")
+                
+        except Exception as e:
+            print(f"❌ Error in AI prediction job: {e}")
+            import traceback
+            traceback.print_exc()
+            # Rollback on error
+            from app import db
+            db.session.rollback()
         
         print(f"--- AI Prediction Job completed at {datetime.now(timezone.utc)} ---")
 
@@ -401,7 +408,7 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=30, # Or your desired interval
+                minutes=60, # Or your desired interval
                 replace_existing=True
             )
         else:
@@ -433,7 +440,7 @@ def create_app(config_name=None):
             id=ai_job_id,
             func=ai_prediction_job,
             trigger='interval',
-            minutes=10, # Or your desired interval
+            minutes=0.5, # Or your desired interval
             replace_existing=True
         )
     else:
