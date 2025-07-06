@@ -401,7 +401,7 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=0.25, # Or your desired interval
+                minutes=30, # Or your desired interval
                 replace_existing=True
             )
         else:
@@ -416,7 +416,7 @@ def create_app(config_name=None):
                 id=primary_job_id, 
                 func=check_for_live_matches_job,
                 trigger='interval',
-                minutes=10, # Or your desired interval
+                minutes=0.5, # Or your desired interval
                 replace_existing=True
             )
         else:
@@ -426,9 +426,9 @@ def create_app(config_name=None):
     from app.services.ai_prediction_service import run_ai_predictions_for_round 
     ai_job_id = 'ai_prediction_job'
     if not scheduler.get_job(ai_job_id):
-        print(f"Scheduling job '{ai_job_id}' to run in 5 minutes for testing.")
-        # Schedule to run in 5 minutes for immediate testing
-        next_run = datetime.now(timezone.utc) + timedelta(minutes=5)
+        print(f"Scheduling job '{ai_job_id}' to run in 10 minutes for testing.")
+        # Schedule to run in 10 minutes for testing
+        next_run = datetime.now(timezone.utc) + timedelta(minutes=10)
         scheduler.add_job(
             id=ai_job_id,
             func=ai_prediction_job,
@@ -443,14 +443,14 @@ def create_app(config_name=None):
     from app.services.historical_data_updater import auto_update_after_round_completion
     update_job_id = 'historical_data_update_job'
     if not scheduler.get_job(update_job_id):
-        print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 03:00:00.")
-        # Schedule to run weekly on Tuesdays at 3 AM to update historical data with completed matches
+        print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 00:00:00.")
+        # Schedule to run weekly on Tuesdays at midnight to update historical data with completed matches
         scheduler.add_job(
             id=update_job_id,
             func=lambda: app.app_context().push() or auto_update_after_round_completion(),
             trigger='cron',
             day_of_week='tue',  # Tuesday
-            hour=3,
+            hour=0,
             minute=0,
             second=0,
             replace_existing=True
