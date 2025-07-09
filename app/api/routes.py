@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
 import secrets
 from urllib.parse import urlencode
+import logging
 from decimal import Decimal, InvalidOperation
 from .settlement import settle_bets_for_match
 from app.sse_events import sse_event_stream_generator
 from app.services.betting_service import place_bet_for_user
+from app.services.ai_prediction_service import AI_BOT_USERNAME
 
 class RoundListResource(Resource): # Ensure it inherits from Resource
     def get(self):
@@ -561,24 +563,40 @@ class GlobalLeaderboard(Resource):
         
 class AIPredictionsByRound(Resource):
     def get(self, year, round_number):
+        logger = logging.getLogger(__name__)
+        logger.info(f"Fetching AI predictions for Year {year}, Round {round_number}")
+        
         # Find the round_id for the given year and round_number
         round_obj = Round.query.filter_by(year=year, round_number=round_number).first()
         if not round_obj:
+            logger.warning(f"Round not found for Year {year}, Round {round_number}")
             return {'message': 'Round not found.'}, 404
 
         # Find all matches for this round
         matches_in_round = round_obj.matches.all()
         match_ids_in_round = [m.match_id for m in matches_in_round]
+        logger.info(f"Found {len(match_ids_in_round)} matches in round: {match_ids_in_round}")
 
         if not match_ids_in_round:
+            logger.info("No matches found in round")
             return {'predictions': {}}, 200 # No matches, so no predictions
         
-        ai_bot_user_id = 1 # change to 2 in production
+        # Find AI bot user properly by username instead of hardcoding ID
+        ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
+        if not ai_bot:
+            logger.error(f'AI Bot user "{AI_BOT_USERNAME}" not found in database')
+            return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
+        
+        logger.info(f"Found AI bot user: {ai_bot.username} (ID: {ai_bot.user_id})")
 
         predictions = AIPrediction.query.filter(
-            AIPrediction.user_id == ai_bot_user_id,
+            AIPrediction.user_id == ai_bot.user_id,
             AIPrediction.match_id.in_(match_ids_in_round)
-        ).all() 
+        ).all()
+        
+        logger.info(f"Found {len(predictions)} AI predictions for the round")
+        if predictions:
+            logger.info(f"Sample prediction: Match {predictions[0].match_id} - {predictions[0].home_team} vs {predictions[0].away_team}")
 
         # Format the predictions into a dictionary keyed by match_id for easy lookup on frontend
         predictions_by_match_id = {
@@ -595,7 +613,8 @@ class AIPredictionsByRound(Resource):
                 'created_at': p.created_at.isoformat()
             } for p in predictions
         }
-
+        
+        logger.info(f"Returning {len(predictions_by_match_id)} predictions to frontend")
         return {'predictions': predictions_by_match_id}, 200   
 
 # --- Function to add all routes ---
