@@ -56,7 +56,7 @@ TEAM_NAME_MAPPING = {
     'Panthers': 'Penrith Panthers',
     'Broncos': 'Brisbane Broncos',
     'Knights': 'Newcastle Knights',
-    'Tigers': 'Wests Tigers',
+    'Wests Tigers': 'Wests Tigers',
     'Eels': 'Parramatta Eels',
     'Warriors': 'New Zealand Warriors'
 }
@@ -132,6 +132,11 @@ def _prepare_upcoming_matches_data(round_number, year):
     # Convert to the format expected by prediction pipeline
     match_data = []
     for match in matches_for_round:
+        # Skip matches without odds - AI predictions require odds for Kelly criterion
+        if not match.home_odds or not match.away_odds:
+            log.info(f"Skipping match {match.home_team} vs {match.away_team} - missing odds (Home: {match.home_odds}, Away: {match.away_odds})")
+            continue
+            
         # Map team names from database format to model training format
         home_team_mapped = _map_team_name_for_model(match.home_team)
         away_team_mapped = _map_team_name_for_model(match.away_team)
@@ -142,8 +147,8 @@ def _prepare_upcoming_matches_data(round_number, year):
             'Away Team': away_team_mapped,  # Use mapped name for model
             'Venue': match.venue or 'TBD',
             'City': match.venue_city or 'TBD',  # Use actual venue city from database
-            'Home Odds': float(match.home_odds) if match.home_odds else None,
-            'Away Odds': float(match.away_odds) if match.away_odds else None,
+            'Home Odds': float(match.home_odds),  # Guaranteed to have odds at this point
+            'Away Odds': float(match.away_odds),  # Guaranteed to have odds at this point
             'Home Score': '',  # Empty for upcoming matches
             'Away Score': '',
             'match_id_db': match.match_id,  # Keep DB ID for later reference
@@ -270,6 +275,11 @@ def run_ai_predictions_for_round(round_number, year):
                 log.warning(f"Could not find DB match for {home_team_for_db} vs {away_team_for_db} (mapped from {row['Home Team']} vs {row['Away Team']})")
                 # Debug: Show available matches
                 log.info(f"Available matches in DB: {[(m.home_team, m.away_team) for m in db_matches]}")
+                continue
+
+            # Double-check that the match has odds (safety check)
+            if not db_match.home_odds or not db_match.away_odds:
+                log.warning(f"Skipping prediction for {db_match.home_team} vs {db_match.away_team} - missing odds in database")
                 continue
             
             log.info(f"Found matching DB match: {db_match.home_team} vs {db_match.away_team} (ID: {db_match.match_id})")
