@@ -2,7 +2,7 @@
 from flask import request, redirect, url_for, session, current_app, Response, stream_with_context
 from flask_restful import Resource, reqparse
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
-from app.models import Round, Match, User, Bet, BankrollHistory
+from app.models import Round, Match, User, Bet, BankrollHistory, AIPrediction
 from app import db, oauth
 from datetime import datetime, timezone
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
@@ -558,6 +558,45 @@ class GlobalLeaderboard(Resource):
              import traceback
              traceback.print_exc()
              return {'message': 'Error retrieving leaderboard data.'}, 500
+        
+class AIPredictionsByRound(Resource):
+    def get(self, year, round_number):
+        # Find the round_id for the given year and round_number
+        round_obj = Round.query.filter_by(year=year, round_number=round_number).first()
+        if not round_obj:
+            return {'message': 'Round not found.'}, 404
+
+        # Find all matches for this round
+        matches_in_round = round_obj.matches.all()
+        match_ids_in_round = [m.match_id for m in matches_in_round]
+
+        if not match_ids_in_round:
+            return {'predictions': {}}, 200 # No matches, so no predictions
+        
+        ai_bot_user_id = 1 # change to 2 in production
+
+        predictions = AIPrediction.query.filter(
+            AIPrediction.user_id == ai_bot_user_id,
+            AIPrediction.match_id.in_(match_ids_in_round)
+        ).all() 
+
+        # Format the predictions into a dictionary keyed by match_id for easy lookup on frontend
+        predictions_by_match_id = {
+            p.match_id: {
+                'prediction_id': p.prediction_id,
+                'home_win_probability': float(p.home_win_probability),
+                'away_win_probability': float(p.away_win_probability),
+                'predicted_winner': p.predicted_winner,
+                'model_confidence': float(p.model_confidence),
+                'betting_recommendation': p.betting_recommendation,
+                'recommended_team': p.recommended_team,
+                'confidence_level': p.confidence_level,
+                'kelly_criterion_stake': float(p.kelly_criterion_stake),
+                'created_at': p.created_at.isoformat()
+            } for p in predictions
+        }
+
+        return {'predictions': predictions_by_match_id}, 200   
 
 # --- Function to add all routes ---
 
@@ -590,6 +629,9 @@ def initialize_routes(app, api):
 
     # Add Leaderboard route
     api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
+
+    # Add AI Predictions route
+    api.add_resource(AIPredictionsByRound, '/api/ai-predictions/year/<int:year>/round/<int:round_number>')
 
     # --- Add SSE Route directly to app ---
     @app.route('/api/stream/updates')

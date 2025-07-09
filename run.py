@@ -58,6 +58,63 @@ def create_bot(username):
         except Exception as e:
             print(f"Error creating bot user: {e}")
 
+@app.cli.command("run-ai-predictions")
+@click.option('--round_number', default=None, type=int, help="Specific round number to predict.")
+@click.option('--year', default=datetime.now().year, type=int, help="Season year.")
+def run_ai_predictions(round_number, year):
+    """Manually run AI predictions for a specific round or current round."""
+    with app.app_context():
+        try:
+            from app.models import Round
+            from app.services.ai_prediction_service import run_ai_predictions_for_round
+            from datetime import datetime, timezone
+            
+            if round_number:
+                # Run for specific round
+                print(f"--- Running AI Predictions for Round {round_number}, Year {year} ---")
+                success = run_ai_predictions_for_round(round_number, year)
+                
+                if success:
+                    print(f"✅ AI predictions completed successfully for Round {round_number}")
+                else:
+                    print(f"❌ AI predictions failed for Round {round_number}")
+            else:
+                # Find current round automatically
+                print("--- Finding current round for AI predictions ---")
+                now = datetime.now(timezone.utc)
+                
+                # First try to find an active round
+                current_round = Round.query.filter(
+                    Round.status == 'Active',
+                    Round.year == year
+                ).first()
+                
+                # If no active round, find the next upcoming round
+                if not current_round:
+                    current_round = Round.query.filter(
+                        Round.status == 'Upcoming',
+                        Round.start_date >= now,
+                        Round.year == year
+                    ).order_by(Round.start_date).first()
+                
+                if current_round:
+                    print(f"--- Running AI Predictions for Round {current_round.round_number}, Year {current_round.year} ---")
+                    success = run_ai_predictions_for_round(current_round.round_number, current_round.year)
+                    
+                    if success:
+                        print(f"✅ AI predictions completed successfully for Round {current_round.round_number}")
+                        # Force commit to ensure data is saved
+                        db.session.commit()
+                    else:
+                        print(f"❌ AI predictions failed for Round {current_round.round_number}")
+                else:
+                    print("⚠️  No suitable round found for AI predictions")
+                    
+        except Exception as e:
+            print(f"❌ Error running AI predictions: {e}")
+            import traceback
+            traceback.print_exc()
+            db.session.rollback()
 
 # --- Main execution ---
 if __name__ == '__main__':
