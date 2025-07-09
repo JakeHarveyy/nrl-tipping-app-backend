@@ -99,7 +99,7 @@ SCALER_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_feature_scaler
 HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_matches_final_model_ready.csv')
 TEAM_STATS_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_team_stats_final_complete.csv')
 AI_BOT_USERNAME = 'LogisticsRegressionBot'
-KELLY_FRACTION = Decimal('0.1')  # Use 10% of recommended Kelly for safety
+KELLY_FRACTION = Decimal('0.5')  # Use 10% of recommended Kelly for safety
 
 def _load_model_and_scaler():
     """Loads the trained model and scaler from .pkl files."""
@@ -286,6 +286,10 @@ def run_ai_predictions_for_round(round_number, year):
             
             # Store prediction in database using mapped team names for display
             try:
+                # Calculate the actual betting stake used (Kelly × Kelly Fraction)
+                kelly_stake_raw = row['kelly_criterion_stake']
+                kelly_stake_actual = kelly_stake_raw * float(KELLY_FRACTION)
+                
                 prediction_entry = AIPrediction(
                     user_id=ai_bot.user_id,
                     match_id=db_match.match_id,
@@ -299,7 +303,7 @@ def run_ai_predictions_for_round(round_number, year):
                     betting_recommendation=row['betting_recommendation'],
                     recommended_team=row.get('recommended_team'),
                     confidence_level=row['confidence_level'],
-                    kelly_criterion_stake=row['kelly_criterion_stake']
+                    kelly_criterion_stake=kelly_stake_actual  # Store the actual stake used for betting
                 )
                 db.session.add(prediction_entry)
                 predictions_stored += 1
@@ -330,6 +334,7 @@ def run_ai_predictions_for_round(round_number, year):
                     # Calculate bet amount using Kelly criterion
                     db.session.refresh(ai_bot)
                     kelly_stake = float(row['kelly_criterion_stake'])
+                    # Apply Kelly fraction (safety multiplier) to reduce bet size
                     bet_amount = Decimal(str(ai_bot.bankroll)) * Decimal(str(kelly_stake)) * KELLY_FRACTION
                     
                     # Cap bet amount
