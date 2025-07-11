@@ -209,9 +209,12 @@ class TokenRefresh(Resource):
 
 class GoogleLogin(Resource):
     def get(self):
-        # Construct the redirect URI dynamically
-        # Use url_for with _external=True to get the full URL
-        redirect_uri = url_for('googleauthcallback', _external=True) # Match endpoint name below
+        # Use the redirect URI from environment config to ensure it matches Google Cloud Console
+        redirect_uri = current_app.config.get('GOOGLE_REDIRECT_URI')
+        if not redirect_uri:
+            # Fallback to constructing it dynamically if not set in config
+            redirect_uri = url_for('googleauthcallback', _external=True)
+        
         print(f"Redirect URI for Google: {redirect_uri}") # Debug print
         return oauth.google.authorize_redirect(redirect_uri)
 
