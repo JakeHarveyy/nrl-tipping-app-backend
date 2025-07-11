@@ -208,7 +208,7 @@ class BankrollHistory(db.Model):
             'amount_change': float(self.amount_change),
             'previous_balance': float(self.previous_balance),
             'new_balance': float(self.new_balance),
-            'timestamp': self.timestamp.isoformat()
+            'timestamp': self.timestamp.isoformat() if self.timestamp else None
         }
     
 class AIPrediction(db.Model):

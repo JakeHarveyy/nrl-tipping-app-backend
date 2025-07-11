@@ -485,6 +485,55 @@ class UserBankrollHistoryList(Resource):
              # 'total_items': history.total
         }, 200
 
+class AIBotBetList(Resource):
+    def get(self):
+        """Get all bets placed by the AI bot (LogisticsRegressionBot)"""
+        # Find the AI bot user
+        ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
+        if not ai_bot:
+            return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
+
+        # Get optional status filter
+        status_filter = request.args.get('status')
+        query = ai_bot.bets
+
+        if status_filter:
+            # Validate status filter
+            allowed_statuses = ['Pending', 'Active', 'Won', 'Lost', 'Void', 'Settled']
+            if status_filter == 'Settled':
+                query = query.filter(Bet.status.in_(['Won', 'Lost', 'Void']))
+            elif status_filter in allowed_statuses:
+                query = query.filter(Bet.status == status_filter)
+
+        # Order bets by placement time descending
+        bets = query.order_by(Bet.placement_time.desc()).all()
+
+        return {
+            'ai_bot_username': AI_BOT_USERNAME,
+            'ai_bot_user_id': ai_bot.user_id,
+            'total_bets': len(bets),
+            'bets': [bet.to_dict() for bet in bets]
+        }, 200
+
+class AIBotBankrollHistory(Resource):
+    def get(self):
+        """Get bankroll history for the AI bot (LogisticsRegressionBot)"""
+        # Find the AI bot user
+        ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
+        if not ai_bot:
+            return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
+
+        # Get the bankroll history ordered by timestamp descending (most recent first)
+        history_items = ai_bot.bankroll_history.order_by(BankrollHistory.timestamp.desc()).all()
+
+        return {
+            'ai_bot_username': AI_BOT_USERNAME,
+            'ai_bot_user_id': ai_bot.user_id,
+            'current_bankroll': float(ai_bot.bankroll),
+            'total_history_entries': len(history_items),
+            'bankroll_history': [item.to_dict() for item in history_items]
+        }, 200
+
 # --- Admin/Simulation Resource ---
 class SimulateResult(Resource):
     @jwt_required() # Protect this endpoint - TODO: Add admin check later if needed
@@ -642,6 +691,8 @@ def initialize_routes(app, api):
     api.add_resource(PlaceBet, '/api/bets/place')
     api.add_resource(UserBetList, '/api/bets') # Endpoint to view user's bets
     api.add_resource(UserBankrollHistoryList, '/api/user/bankroll-history') # Endpoint for history
+    api.add_resource(AIBotBetList, '/api/ai-bot/bets') # Endpoint for AI bot's bets
+    api.add_resource(AIBotBankrollHistory, '/api/ai-bot/bankroll-history') # Endpoint for AI bot's bankroll history
 
     #simulate reults routes
     api.add_resource(SimulateResult, '/api/admin/matches/<int:match_id>/simulate-result')

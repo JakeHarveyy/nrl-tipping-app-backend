@@ -1,6 +1,6 @@
 # app/__init__.py
 import os
-from flask import Flask
+from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_restful import Api  # <<< Import Api
@@ -362,7 +362,14 @@ def create_app(config_name=None):
         app.logger.warning("FRONTEND_URL environment variable not set. Production CORS might fail.")
 
     # Initialize CORS with the final list of origins
-    CORS(app, resources={r"/api/*": {"origins": allowed_origins}}, supports_credentials=True)
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": allowed_origins,
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+            "expose_headers": ["Content-Range", "X-Content-Range"]
+        }
+    }, supports_credentials=True)
 
     # Register Google OAuth client with Authlib
     oauth.register(
