@@ -211,11 +211,24 @@ class GoogleLogin(Resource):
     def get(self):
         # Use the redirect URI from environment config to ensure it matches Google Cloud Console
         redirect_uri = current_app.config.get('GOOGLE_REDIRECT_URI')
+        fallback_uri = url_for('googleauthcallback', _external=True)
+        
+        print(f"=== GOOGLE OAUTH DEBUG ===")
+        print(f"Environment GOOGLE_REDIRECT_URI: {redirect_uri}")
+        print(f"Fallback URL (url_for): {fallback_uri}")
+        print(f"Current app config keys: {list(current_app.config.keys())}")
+        print(f"Flask environment: {current_app.config.get('ENV', 'not set')}")
+        print(f"Request host: {request.host}")
+        print(f"Request base URL: {request.base_url}")
+        print(f"========================")
+        
         if not redirect_uri:
             # Fallback to constructing it dynamically if not set in config
-            redirect_uri = url_for('googleauthcallback', _external=True)
+            redirect_uri = fallback_uri
+            print(f"Using fallback URI: {redirect_uri}")
+        else:
+            print(f"Using environment URI: {redirect_uri}")
         
-        print(f"Redirect URI for Google: {redirect_uri}") # Debug print
         return oauth.google.authorize_redirect(redirect_uri)
 
 class GoogleAuthCallback(Resource):
