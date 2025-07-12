@@ -1,4 +1,15 @@
 # app/api/routes.py
+"""
+API Routes for NRL Tipping Application
+
+Contains all REST API endpoints for user management, authentication, betting,
+match data, AI predictions, and real-time updates. Handles both traditional
+registration/login and OAuth integration with comprehensive betting functionality.
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 from flask import request, redirect, url_for, session, current_app, Response, stream_with_context
 from flask_restful import Resource, reqparse
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
@@ -15,7 +26,9 @@ from app.sse_events import sse_event_stream_generator
 from app.services.betting_service import place_bet_for_user
 from app.services.ai_prediction_service import AI_BOT_USERNAME
 
-# --- Helper function for calculating initial bankroll based on current round ---
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 def calculate_initial_bankroll():
     """
     Calculate initial bankroll based on current active round.
@@ -24,91 +37,24 @@ def calculate_initial_bankroll():
     now = datetime.now(timezone.utc)
     current_year = now.year
     
-    # Find the current active round
     active_round = Round.query.filter_by(status='Active', year=current_year).first()
     
     if active_round:
-        # If there's an active round, use its round number * 1000
         round_number = active_round.round_number
     else:
-        # If no active round, try to find the earliest upcoming round
         upcoming_round = Round.query.filter_by(status='Upcoming', year=current_year) \
                                    .order_by(Round.start_date.asc()).first()
         if upcoming_round:
             round_number = upcoming_round.round_number
         else:
-            # Fallback to round 1 if no rounds found
             round_number = 1
     
     initial_bankroll = Decimal(str(round_number * 1000))
     return initial_bankroll, round_number
 
-class RoundListResource(Resource): # Ensure it inherits from Resource
-    def get(self):
-        """Get list of all rounds"""
-        # ... (implementation as before) ...
-        rounds = Round.query.order_by(Round.year, Round.round_number).all()
-        return {'rounds': [r.to_dict() for r in rounds]}, 200
-
-
-class MatchListResource(Resource):
-    def get(self):
-        now = datetime.now(timezone.utc)
-        target_round_number = request.args.get('round_number', type=int)
-        target_year = request.args.get('year', type=int, default=now.year)
-        # status_filter = request.args.get('status', 'Scheduled') # We might not need status filter if filtering by round status
-
-        query = Match.query.join(Round) # Always join with Round
-
-        current_active_round_obj = None
-
-        if target_round_number is None:
-            # No specific round requested, try to find the 'Active' round
-            active_round = Round.query.filter_by(status='Active', year=target_year).first()
-            if active_round:
-                query = query.filter(Match.round_id == active_round.round_id)
-                current_active_round_obj = active_round
-            else:
-                # No active round, find the earliest 'Upcoming' round for the year
-                upcoming_round = Round.query.filter_by(status='Upcoming', year=target_year) \
-                                         .order_by(Round.start_date.asc()).first()
-                if upcoming_round:
-                    query = query.filter(Match.round_id == upcoming_round.round_id)
-                    current_active_round_obj = upcoming_round
-                else:
-                    # No active or upcoming rounds found for the year
-                    return {'matches': [], 'round_info': None, 'message': f'No active or upcoming rounds found for {target_year}.'}, 200
-        else:
-            # Specific round requested
-            specific_round = Round.query.filter_by(round_number=target_round_number, year=target_year).first()
-            if specific_round:
-                query = query.filter(Match.round_id == specific_round.round_id)
-                current_active_round_obj = specific_round # Keep track of the round being displayed
-            else:
-                return {'matches': [], 'round_info': None, 'message': f'Round {target_round_number} for year {target_year} not found.'}, 404
-
-        matches = query.order_by(Match.start_time.asc()).all()
-
-        round_info = None
-        if current_active_round_obj: # If a round was determined
-            round_info = {
-                'round_id': current_active_round_obj.round_id,
-                'round_number': current_active_round_obj.round_number,
-                'year': current_active_round_obj.year,
-                'status': current_active_round_obj.status # <<< SEND ROUND STATUS
-            }
-
-        return {'matches': [m.to_dict() for m in matches], 'round_info': round_info}, 200
-
-class MatchResource(Resource): # Ensure it inherits from Resource
-     def get(self, match_id):
-         """Get details for a specific match"""
-         match = Match.query.get_or_404(match_id)
-         return {'match': match.to_dict()}, 200
-
-# --- Argument Parsers (using reqparse for simplicity now) ---
-# Consider Marshmallow or Pydantic for more robust validation later
-
+# =============================================================================
+# REQUEST PARSERS
+# =============================================================================
 _user_parser = reqparse.RequestParser()
 _user_parser.add_argument('username', type=str, required=True, help='Username cannot be blank')
 _user_parser.add_argument('email', type=str, required=True, help='Email cannot be blank')
@@ -118,92 +64,142 @@ _login_parser = reqparse.RequestParser()
 _login_parser.add_argument('username', type=str, required=True, help='Username cannot be blank')
 _login_parser.add_argument('password', type=str, required=True, help='Password cannot be blank')
 
-# --- Parser for Placing Bets ---
 _bet_parser = reqparse.RequestParser()
 _bet_parser.add_argument('match_id', type=int, required=True, help='Match ID cannot be blank')
 _bet_parser.add_argument('team_selected', type=str, required=True, help='Team selection cannot be blank')
-_bet_parser.add_argument('amount', type=str, required=True, help='Bet amount cannot be blank') # Parse as string initially for Decimal conversion
+_bet_parser.add_argument('amount', type=str, required=True, help='Bet amount cannot be blank')
 
-# --- Parser for Simulating Results ---
 _result_parser = reqparse.RequestParser()
-# Use location='json' to strictly look in the JSON body
 _result_parser.add_argument('home_score', type=int, required=True, help='Home score is required (integer)', location='json')
 _result_parser.add_argument('away_score', type=int, required=True, help='Away score is required (integer)', location='json')
 
-# --- Authentication Resources ---
+_pw_reset_request_parser = reqparse.RequestParser()
+_pw_reset_request_parser.add_argument('email', type=str, required=True, help='Email cannot be blank')
+
+_pw_reset_confirm_parser = reqparse.RequestParser()
+_pw_reset_confirm_parser.add_argument('token', type=str, required=True, help='Token cannot be blank')
+_pw_reset_confirm_parser.add_argument('new_password', type=str, required=True, help='New password cannot be blank')
+
+class RoundListResource(Resource):
+    def get(self):
+        """Get list of all rounds"""
+        rounds = Round.query.order_by(Round.year, Round.round_number).all()
+        return {'rounds': [r.to_dict() for r in rounds]}, 200
+
+
+class MatchListResource(Resource):
+    def get(self):
+        now = datetime.now(timezone.utc)
+        target_round_number = request.args.get('round_number', type=int)
+        target_year = request.args.get('year', type=int, default=now.year)
+
+        query = Match.query.join(Round)
+        current_active_round_obj = None
+
+        if target_round_number is None:
+            active_round = Round.query.filter_by(status='Active', year=target_year).first()
+            if active_round:
+                query = query.filter(Match.round_id == active_round.round_id)
+                current_active_round_obj = active_round
+            else:
+                upcoming_round = Round.query.filter_by(status='Upcoming', year=target_year) \
+                                         .order_by(Round.start_date.asc()).first()
+                if upcoming_round:
+                    query = query.filter(Match.round_id == upcoming_round.round_id)
+                    current_active_round_obj = upcoming_round
+                else:
+                    return {'matches': [], 'round_info': None, 'message': f'No active or upcoming rounds found for {target_year}.'}, 200
+        else:
+            specific_round = Round.query.filter_by(round_number=target_round_number, year=target_year).first()
+            if specific_round:
+                query = query.filter(Match.round_id == specific_round.round_id)
+                current_active_round_obj = specific_round
+            else:
+                return {'matches': [], 'round_info': None, 'message': f'Round {target_round_number} for year {target_year} not found.'}, 404
+
+        matches = query.order_by(Match.start_time.asc()).all()
+
+        round_info = None
+        if current_active_round_obj:
+            round_info = {
+                'round_id': current_active_round_obj.round_id,
+                'round_number': current_active_round_obj.round_number,
+                'year': current_active_round_obj.year,
+                'status': current_active_round_obj.status
+            }
+
+        return {'matches': [m.to_dict() for m in matches], 'round_info': round_info}, 200
+
+class MatchResource(Resource):
+     def get(self, match_id):
+         """Get details for a specific match"""
+         match = Match.query.get_or_404(match_id)
+         return {'match': match.to_dict()}, 200
+
+# =============================================================================
+# AUTHENTICATION RESOURCES
+# =============================================================================
 
 class UserRegister(Resource):
     def post(self):
         data = _user_parser.parse_args()
 
-        # Check if username or email already exists
         if User.find_by_username(data['username']):
             return {'message': 'A user with that username already exists'}, 400
         if User.find_by_email(data['email']):
             return {'message': 'A user with that email already exists'}, 400
 
-        # Calculate initial bankroll based on current active round
         initial_bankroll, round_number = calculate_initial_bankroll()
         
         user = User(
             username=data['username'],
-            email=data['email'].lower(), # Store email in lowercase
+            email=data['email'].lower(),
             is_email_verified = False,
             bankroll = initial_bankroll
         )
         user.set_password(data['password'])
-        # user.is_email_verified = False # Add email verification later
 
         try:
-            db.session.add(user) # Add user to session
-            db.session.flush() # Flush to assign user.user_id without committing yet
+            db.session.add(user)
+            db.session.flush()
 
-            # --- Log Initial Bankroll ---
             history_entry = BankrollHistory(
                 user_id=user.user_id,
-                round_number=round_number, # Set to the current round number
+                round_number=round_number,
                 change_type='Initial Deposit',
                 related_bet_id=None,
                 amount_change=initial_bankroll,
-                previous_balance=Decimal('0.00'), # Starting from zero
+                previous_balance=Decimal('0.00'),
                 new_balance=initial_bankroll,
-                timestamp=datetime.now(timezone.utc) # Ensure timestamp matches
+                timestamp=datetime.now(timezone.utc)
             )
             db.session.add(history_entry)
-            # ---------------------------
 
-            db.session.commit() # Commit both user and history entry together
+            db.session.commit()
             print(f"User {user.username} created with ID {user.user_id}")
             print(f"Initial bankroll ${initial_bankroll} (Round {round_number} x $1000) logged for user {user.user_id}")
 
         except Exception as e:
-            db.session.rollback() # Rollback ALL changes if any error occurs
+            db.session.rollback()
             print(f"Error saving user or logging initial bankroll: {e}")
-            # Log the detailed exception
             import traceback
             traceback.print_exc()
             return {'message': 'An error occurred during registration.'}, 500
 
-
-        # Generate verification token BEFORE saving (though order doesn't strictly matter here)
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
         verification_token = serializer.dumps(user.email, salt='email-verification-salt')
 
-        # TODO: Send email with verification_token in a real app
-        # verify_url = url_for('verifyemail', token=verification_token, _external=True) # 'verifyemail' is endpoint name
-        # send_email(user.email, "Verify Your Email", f"Click here: {verify_url}")
-        print(f"--- Email Verification Token for {user.email}: {verification_token} ---") # For testing
+        print(f"--- Email Verification Token for {user.email}: {verification_token} ---")
 
         try:
             user.save_to_db()
         except Exception as e:
-            print(f"Error saving user: {e}") # Log the error
+            print(f"Error saving user: {e}")
             return {'message': 'An error occurred during registration.'}, 500
 
-        # Return token FOR TESTING ONLY. Do not do this in production.
         return {
             'message': 'User created successfully. Please verify your email.',
-            'verification_token_for_testing': verification_token # REMOVE IN PRODUCTION
+            'verification_token_for_testing': verification_token
             }, 201
 
 class UserLogin(Resource):
@@ -212,14 +208,11 @@ class UserLogin(Resource):
         user = User.find_by_username(data['username'])
 
         if user and user.check_password(data['password']):
-            # Credentials valid, create tokens
-            # 'identity' can be user ID or any unique identifier
             access_token = create_access_token(identity=str(user.user_id), fresh=True)
             refresh_token = create_refresh_token(identity=str(user.user_id))
 
-            # Update last_login time
             user.last_login = datetime.now(timezone.utc)
-            db.session.commit() # No need for user.save_to_db() if just updating existing
+            db.session.commit()
 
             return {
                 'access_token': access_token,
@@ -229,23 +222,22 @@ class UserLogin(Resource):
         return {'message': 'Invalid credentials'}, 401
     
 class TokenRefresh(Resource):
-    @jwt_required(refresh=True) # Requires a valid refresh token
+    @jwt_required(refresh=True)
     def post(self):
         current_user_id = get_jwt_identity()
-        new_access_token = create_access_token(identity=current_user_id, fresh=False) # Mark as not fresh
+        new_access_token = create_access_token(identity=current_user_id, fresh=False)
         return {'access_token': new_access_token}, 200
 
-# --- Google OAuth Routes ---
+# =============================================================================
+# OAUTH AUTHENTICATION RESOURCES
+# =============================================================================
 
 class GoogleLogin(Resource):
     def get(self):
-        # Use the redirect URI from environment config to ensure it matches Google Cloud Console
         redirect_uri = current_app.config.get('GOOGLE_REDIRECT_URI')
         if not redirect_uri:
-            # Fallback to constructing it dynamically if not set in config
             redirect_uri = url_for('googleauthcallback', _external=True)
         
-        # Add state parameter to force fresh request and prevent caching
         import time
         state = f"oauth_state_{int(time.time())}"
         return oauth.google.authorize_redirect(redirect_uri, state=state)
@@ -256,21 +248,19 @@ class GoogleAuthCallback(Resource):
             token = oauth.google.authorize_access_token()
         except Exception as e:
              print(f"Error authorizing access token: {e}")
-             # Redirect to frontend login page with error query param
              frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_auth_failed"
              return redirect(frontend_error_url)
 
         user_info = oauth.google.get('https://openidconnect.googleapis.com/v1/userinfo').json()
         google_id = user_info.get('sub')
         email = user_info.get('email')
-        username = user_info.get('email').split('@')[0] # Default username
+        username = user_info.get('email').split('@')[0]
 
         if not email or not google_id:
              frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_info_missing"
              return redirect(frontend_error_url)
 
         user = User.find_by_google_id(google_id)
-        # ... (logic to find by email or create new user as before) ...
         is_new_user = False
         if not user:
             user = User.find_by_email(email)
@@ -278,7 +268,6 @@ class GoogleAuthCallback(Resource):
                 if user.google_id is None: user.google_id = google_id
                 if not user.is_email_verified: user.is_email_verified = True
             else:
-                # This is a completely new user, calculate initial bankroll based on current active round
                 is_new_user = True
                 initial_bankroll, round_number = calculate_initial_bankroll()
                 
@@ -290,10 +279,9 @@ class GoogleAuthCallback(Resource):
                 username = temp_username
                 user = User(username=username, email=email.lower(), google_id=google_id, is_email_verified=True, bankroll=initial_bankroll)
             try:
-                 db.session.add(user) # Add user to session
-                 db.session.flush() # Flush to assign user.user_id without committing yet
+                 db.session.add(user)
+                 db.session.flush()
                  
-                 # --- Log Initial Bankroll for new Google users ---
                  if is_new_user:
                      history_entry = BankrollHistory(
                          user_id=user.user_id,
@@ -307,7 +295,6 @@ class GoogleAuthCallback(Resource):
                      )
                      db.session.add(history_entry)
                      print(f"Google user {user.username} created with initial bankroll ${initial_bankroll} (Round {round_number} x $1000)")
-                 # ------------------------------------------------
                  
                  db.session.commit()
             except Exception as e:
@@ -316,86 +303,43 @@ class GoogleAuthCallback(Resource):
                  frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_db_error"
                  return redirect(frontend_error_url)
 
-        # --- Create Tokens (ensure identity is string) ---
         access_token = create_access_token(identity=str(user.user_id), fresh=True)
         refresh_token = create_refresh_token(identity=str(user.user_id))
-        # --------------------------------------------------
 
         user.last_login = datetime.now(timezone.utc)
         db.session.commit()
 
-        # --- Redirect to Frontend with Tokens ---
         frontend_base_url = current_app.config.get('FRONTEND_URL', 'http://localhost:5173')
-        # Define the target path on the frontend for handling this callback
         frontend_callback_path = '/auth/google/callback'
-        # Prepare query parameters
         params = {
             'access_token': access_token,
             'refresh_token': refresh_token
-            # Optionally add user info if needed directly, but fetching is better
-            # 'user_id': user.user_id,
-            # 'username': user.username
         }
-        # Construct the full redirect URL
         redirect_url = f"{frontend_base_url}{frontend_callback_path}?{urlencode(params)}"
 
-        print(f"Redirecting to frontend: {redirect_url}") # Debugging
+        print(f"Redirecting to frontend: {redirect_url}")
         return redirect(redirect_url, code=302)
 
-# --- Example Protected Resource ---
-class UserProfile(Resource):
-    @jwt_required() # This decorator requires a valid access token
-    def get(self):
-        # get_jwt_identity() retrieves the identity stored in the token (user_id as string)
-        current_user_id_str = get_jwt_identity()
-        user = User.query.get(int(current_user_id_str)) # Convert back to int for lookup
+# =============================================================================
+# PASSWORD RESET AND EMAIL VERIFICATION RESOURCES
+# =============================================================================
 
-        if not user:
-            return {"message": "User not found"}, 404
-
-        # In a real app, return more profile details
-        return {
-            "user_id": user.user_id,
-            "username": user.username,
-            "email": user.email,
-            "bankroll": float(user.bankroll), # Convert Decimal for JSON
-            "message": "Protected data access successful"
-         }, 200
-
-# --- Parser for Password Reset Request ---
-_pw_reset_request_parser = reqparse.RequestParser()
-_pw_reset_request_parser.add_argument('email', type=str, required=True, help='Email cannot be blank')
-
-# --- Parser for Setting New Password ---
-_pw_reset_confirm_parser = reqparse.RequestParser()
-_pw_reset_confirm_parser.add_argument('token', type=str, required=True, help='Token cannot be blank')
-_pw_reset_confirm_parser.add_argument('new_password', type=str, required=True, help='New password cannot be blank')
-
-# --- Password Reset Resources ---
 class RequestPasswordReset(Resource):
     def post(self):
         data = _pw_reset_request_parser.parse_args()
         user = User.find_by_email(data['email'])
 
         if not user:
-            # Don't reveal if email exists, standard security practice
             return {'message': 'If an account with that email exists, a reset token has been generated.'}, 200
 
-        # Generate Token using itsdangerous
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
-        # Use email or user_id + security stamp. Email is simpler for lookup.
         token = serializer.dumps(user.email, salt='password-reset-salt')
 
-        # TODO: Send email with token here in a real app
-        # reset_url = url_for('resetpassword', token=token, _external=True) # 'resetpassword' is the endpoint name
-        # send_email(user.email, "Password Reset Request", f"Click here: {reset_url}")
+        print(f"--- Password Reset Token for {user.email}: {token} ---")
 
-        print(f"--- Password Reset Token for {user.email}: {token} ---") # For testing
-
-        # Return token FOR TESTING ONLY. Do not do this in production.
         return {
             'message': 'If an account with that email exists, a reset token has been generated.',
-            'reset_token_for_testing': token # REMOVE THIS LINE IN PRODUCTION
+            'reset_token_for_testing': token
             }, 200
 
 class ResetPassword(Resource):
@@ -404,11 +348,10 @@ class ResetPassword(Resource):
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
 
         try:
-            # Verify the token and get the email back. Set max age (e.g., 1 hour)
             email = serializer.loads(
                 data['token'],
                 salt='password-reset-salt',
-                max_age=3600 # Token valid for 1 hour (in seconds)
+                max_age=3600
             )
         except SignatureExpired:
             return {'message': 'Password reset token has expired.'}, 400
@@ -420,30 +363,25 @@ class ResetPassword(Resource):
 
         user = User.find_by_email(email)
         if not user:
-            # Should technically not happen if token was valid, but check anyway
             return {'message': 'User not found.'}, 404
 
-        # Set the new password
         user.set_password(data['new_password'])
         try:
-            user.save_to_db() # Commits the change
+            user.save_to_db()
         except Exception as e:
             print(f"Error saving new password: {e}")
             return {'message': 'An error occurred setting the new password.'}, 500
 
         return {'message': 'Password has been reset successfully.'}, 200
-    
 
-# --- Add Email Verification Resource ---
 class VerifyEmail(Resource):
-    def get(self, token): # Token comes from the URL
+    def get(self, token):
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
         try:
-             # Verify token, set reasonable max age (e.g., 1 day)
              email = serializer.loads(
                 token,
                 salt='email-verification-salt',
-                max_age=86400 # 24 hours in seconds
+                max_age=86400
              )
         except SignatureExpired:
             return {'message': 'Email verification link has expired.'}, 400
@@ -455,10 +393,10 @@ class VerifyEmail(Resource):
 
         user = User.find_by_email(email)
         if not user:
-             return {'message': 'User not found.'}, 404 # Should not happen
+             return {'message': 'User not found.'}, 404
 
         if user.is_email_verified:
-             return {'message': 'Email is already verified.'}, 200 # Or redirect to login
+             return {'message': 'Email is already verified.'}, 200
 
         user.is_email_verified = True
         try:
@@ -467,10 +405,32 @@ class VerifyEmail(Resource):
             print(f"Error marking email as verified: {e}")
             return {'message': 'An error occurred during email verification.'}, 500
 
-        # TODO: Redirect to a confirmation page or login page on the frontend
         return {'message': 'Email verified successfully!'}, 200
-    
-# --- Betting Resources ---
+
+# =============================================================================
+# USER PROFILE AND PROTECTED RESOURCES
+# =============================================================================
+
+class UserProfile(Resource):
+    @jwt_required()
+    def get(self):
+        current_user_id_str = get_jwt_identity()
+        user = User.query.get(int(current_user_id_str))
+
+        if not user:
+            return {"message": "User not found"}, 404
+
+        return {
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "bankroll": float(user.bankroll),
+            "message": "Protected data access successful"
+         }, 200
+
+# =============================================================================
+# BETTING RESOURCES
+# =============================================================================
 
 class PlaceBet(Resource):
     @jwt_required()
@@ -478,7 +438,7 @@ class PlaceBet(Resource):
         data = _bet_parser.parse_args()
         user = User.query.get(int(get_jwt_identity()))
         match = Match.query.get(data['match_id'])
-        bet_amount = Decimal(data['amount']) # Convert from string here
+        bet_amount = Decimal(data['amount'])
 
         success, result = place_bet_for_user(
             user=user,
@@ -490,9 +450,7 @@ class PlaceBet(Resource):
         if success:
             return {'message': 'Bet placed successfully!', 'bet_details': result.to_dict()}, 201
         else:
-            # 'result' contains the error message from the service
             return {'message': result}, 400
-
 
 class UserBetList(Resource):
     @jwt_required()
@@ -502,24 +460,18 @@ class UserBetList(Resource):
         if not user:
             return {'message': 'User not found'}, 404
 
-        # --- Filtering by Status (Optional) ---
-        status_filter = request.args.get('status') # e.g., ?status=Pending or ?status=Settled
-        query = user.bets # Access the user's bets via the relationship
+        status_filter = request.args.get('status')
+        query = user.bets
 
         if status_filter:
-            # Validate status filter if desired
-            allowed_statuses = ['Pending', 'Active', 'Won', 'Lost', 'Void', 'Settled'] # Define allowed filters
-            if status_filter == 'Settled': # Allow filtering for all completed bets
+            allowed_statuses = ['Pending', 'Active', 'Won', 'Lost', 'Void', 'Settled']
+            if status_filter == 'Settled':
                  query = query.filter(Bet.status.in_(['Won', 'Lost', 'Void']))
             elif status_filter in allowed_statuses:
                  query = query.filter(Bet.status == status_filter)
-            # else: ignore invalid filter? Or return error?
 
-        # Order bets, e.g., by placement time descending
         bets = query.order_by(Bet.placement_time.desc()).all()
-
         return {'bets': [bet.to_dict() for bet in bets]}, 200
-
 
 class UserBankrollHistoryList(Resource):
      @jwt_required()
@@ -529,43 +481,33 @@ class UserBankrollHistoryList(Resource):
         if not user:
             return {'message': 'User not found'}, 404
 
-        # Consider adding pagination later for performance
-        # page = request.args.get('page', 1, type=int)
-        # per_page = request.args.get('per_page', 20, type=int)
-        # history = user.bankroll_history.order_by(BankrollHistory.timestamp.desc()).paginate(page=page, per_page=per_page, error_out=False)
-        # items = history.items
-
         history_items = user.bankroll_history.order_by(BankrollHistory.timestamp.desc()).all()
 
         return {
              'bankroll_history': [item.to_dict() for item in history_items]
-             # Include pagination info if using paginate:
-             # 'total_pages': history.pages,
-             # 'current_page': history.page,
-             # 'total_items': history.total
         }, 200
+
+# =============================================================================
+# AI BOT RESOURCES
+# =============================================================================
 
 class AIBotBetList(Resource):
     def get(self):
-        """Get all bets placed by the AI bot (LogisticsRegressionBot)"""
-        # Find the AI bot user
+        """Get all bets placed by the AI bot"""
         ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
         if not ai_bot:
             return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
 
-        # Get optional status filter
         status_filter = request.args.get('status')
         query = ai_bot.bets
 
         if status_filter:
-            # Validate status filter
             allowed_statuses = ['Pending', 'Active', 'Won', 'Lost', 'Void', 'Settled']
             if status_filter == 'Settled':
                 query = query.filter(Bet.status.in_(['Won', 'Lost', 'Void']))
             elif status_filter in allowed_statuses:
                 query = query.filter(Bet.status == status_filter)
 
-        # Order bets by placement time descending
         bets = query.order_by(Bet.placement_time.desc()).all()
 
         return {
@@ -577,13 +519,11 @@ class AIBotBetList(Resource):
 
 class AIBotBankrollHistory(Resource):
     def get(self):
-        """Get bankroll history for the AI bot (LogisticsRegressionBot)"""
-        # Find the AI bot user
+        """Get bankroll history for the AI bot"""
         ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
         if not ai_bot:
             return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
 
-        # Get the bankroll history ordered by timestamp descending (most recent first)
         history_items = ai_bot.bankroll_history.order_by(BankrollHistory.timestamp.desc()).all()
 
         return {
@@ -594,103 +534,25 @@ class AIBotBankrollHistory(Resource):
             'bankroll_history': [item.to_dict() for item in history_items]
         }, 200
 
-# --- Admin/Simulation Resource ---
-class SimulateResult(Resource):
-    @jwt_required() # Protect this endpoint - TODO: Add admin check later if needed
-    def post(self, match_id):
-        data = _result_parser.parse_args()
-        home_score = data['home_score']
-        away_score = data['away_score']
-
-        # Basic score validation
-        if home_score < 0 or away_score < 0:
-            return {'message': 'Scores cannot be negative.'}, 400
-
-        match = Match.query.get(match_id)
-        if not match:
-            return {'message': 'Match not found.'}, 404
-
-        if match.status == 'Completed':
-            return {'message': 'Match has already been settled.'}, 400
-
-        if match.status != 'Scheduled' and match.status != 'Live': # Allow settling Live matches too potentially
-             # Or maybe only allow settling 'Scheduled'/'Live'? Adjust as needed.
-             print(f"Attempt to settle match {match_id} with status {match.status}")
-             # return {'message': f'Cannot settle match with status "{match.status}".'}, 400
-
-        try:
-            # Call the settlement logic function
-            success, message = settle_bets_for_match(match_id, home_score, away_score)
-            if success:
-                return {'message': message or 'Match settled successfully.'}, 200
-            else:
-                # If settlement function returns specific error message
-                return {'message': message or 'Failed to settle match.'}, 400 # Or 500 depending on error type
-        except Exception as e:
-            # Catch unexpected errors during settlement call
-            print(f"Unexpected error calling settlement for match {match_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return {'message': 'An internal error occurred during settlement.'}, 500
-        
-# --- Leaderboard Resource ---
-class GlobalLeaderboard(Resource):
-    # No JWT required for a public leaderboard, adjust if needed
-    def get(self):
-        # Get query parameters for pagination/limit (optional but good practice)
-        page = request.args.get('page', 1, type=int)
-        limit = request.args.get('limit', 50, type=int) # Default limit 50
-        # Ensure limit isn't excessively large
-        limit = min(limit, 200)
-
-        try:
-            # Query users, order by bankroll descending, paginate results
-            leaderboard_page = User.query.filter(User.active == True) \
-                                         .order_by(User.bankroll.desc(), User.username.asc()) \
-                                         .paginate(page=page, per_page=limit, error_out=False)
-
-            users_data = [{
-                'rank': (leaderboard_page.page - 1) * leaderboard_page.per_page + i + 1, # Calculate rank
-                'user_id': user.user_id,
-                'username': user.username,
-                'bankroll': float(user.bankroll) # Convert Decimal for JSON
-             } for i, user in enumerate(leaderboard_page.items)] # Use .items with paginate
-
-            return {
-                'leaderboard': users_data,
-                'total_users': leaderboard_page.total,
-                'current_page': leaderboard_page.page,
-                'total_pages': leaderboard_page.pages,
-                'per_page': leaderboard_page.per_page
-             }, 200
-
-        except Exception as e:
-             print(f"Error fetching global leaderboard: {e}")
-             import traceback
-             traceback.print_exc()
-             return {'message': 'Error retrieving leaderboard data.'}, 500
-        
 class AIPredictionsByRound(Resource):
     def get(self, year, round_number):
+        """Get AI predictions for a specific round"""
         logger = logging.getLogger(__name__)
         logger.info(f"Fetching AI predictions for Year {year}, Round {round_number}")
         
-        # Find the round_id for the given year and round_number
         round_obj = Round.query.filter_by(year=year, round_number=round_number).first()
         if not round_obj:
             logger.warning(f"Round not found for Year {year}, Round {round_number}")
             return {'message': 'Round not found.'}, 404
 
-        # Find all matches for this round
         matches_in_round = round_obj.matches.all()
         match_ids_in_round = [m.match_id for m in matches_in_round]
         logger.info(f"Found {len(match_ids_in_round)} matches in round: {match_ids_in_round}")
 
         if not match_ids_in_round:
             logger.info("No matches found in round")
-            return {'predictions': {}}, 200 # No matches, so no predictions
+            return {'predictions': {}}, 200
         
-        # Find AI bot user properly by username instead of hardcoding ID
         ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
         if not ai_bot:
             logger.error(f'AI Bot user "{AI_BOT_USERNAME}" not found in database')
@@ -707,7 +569,6 @@ class AIPredictionsByRound(Resource):
         if predictions:
             logger.info(f"Sample prediction: Match {predictions[0].match_id} - {predictions[0].home_team} vs {predictions[0].away_team}")
 
-        # Format the predictions into a dictionary keyed by match_id for easy lookup on frontend
         predictions_by_match_id = {
             p.match_id: {
                 'prediction_id': p.prediction_id,
@@ -724,54 +585,87 @@ class AIPredictionsByRound(Resource):
         }
         
         logger.info(f"Returning {len(predictions_by_match_id)} predictions to frontend")
-        return {'predictions': predictions_by_match_id}, 200   
+        return {'predictions': predictions_by_match_id}, 200
 
-# --- Function to add all routes ---
+# =============================================================================
+# LEADERBOARD RESOURCES
+# =============================================================================
+
+class GlobalLeaderboard(Resource):
+    def get(self):
+        """Get global user leaderboard ranked by bankroll"""
+        page = request.args.get('page', 1, type=int)
+        limit = request.args.get('limit', 50, type=int)
+        limit = min(limit, 200)
+
+        try:
+            leaderboard_page = User.query.filter(User.active == True) \
+                                         .order_by(User.bankroll.desc(), User.username.asc()) \
+                                         .paginate(page=page, per_page=limit, error_out=False)
+
+            users_data = [{
+                'rank': (leaderboard_page.page - 1) * leaderboard_page.per_page + i + 1,
+                'user_id': user.user_id,
+                'username': user.username,
+                'bankroll': float(user.bankroll)
+             } for i, user in enumerate(leaderboard_page.items)]
+
+            return {
+                'leaderboard': users_data,
+                'total_users': leaderboard_page.total,
+                'current_page': leaderboard_page.page,
+                'total_pages': leaderboard_page.pages,
+                'per_page': leaderboard_page.per_page
+             }, 200
+
+        except Exception as e:
+             print(f"Error fetching global leaderboard: {e}")
+             import traceback
+             traceback.print_exc()
+             return {'message': 'Error retrieving leaderboard data.'}, 500
+
+# =============================================================================
+# ROUTE INITIALIZATION
+# =============================================================================
 
 def initialize_routes(app, api):
-    # Existing Match/Round routes
+    """Initialize all API routes and endpoints"""
+    
+    # Match and Round endpoints
     api.add_resource(RoundListResource, '/api/rounds')
     api.add_resource(MatchListResource, '/api/matches', '/api/matches/upcoming')
     api.add_resource(MatchResource, '/api/matches/<int:match_id>')
-    api.add_resource(UserProfile, '/api/user/profile')
-
-    # Add Authentication routes
+    
+    # Authentication endpoints
     api.add_resource(UserRegister, '/api/auth/register')
     api.add_resource(UserLogin, '/api/auth/login')
     api.add_resource(TokenRefresh, '/api/auth/refresh')
     api.add_resource(GoogleLogin, '/api/auth/google/login')
+    api.add_resource(GoogleAuthCallback, '/api/auth/google/callback', endpoint='googleauthcallback')
     api.add_resource(RequestPasswordReset, '/api/auth/request-password-reset')
     api.add_resource(ResetPassword, '/api/auth/reset-password')
     api.add_resource(VerifyEmail, '/api/auth/verify-email/<string:token>', endpoint='verifyemail')
-
-    # IMPORTANT: Endpoint name 'googleauthcallback' must match url_for in GoogleLogin
-    api.add_resource(GoogleAuthCallback, '/api/auth/google/callback', endpoint='googleauthcallback')
-
-    # Add Betting routes
+    
+    # User profile and data endpoints
+    api.add_resource(UserProfile, '/api/user/profile')
+    api.add_resource(UserBankrollHistoryList, '/api/user/bankroll-history')
+    
+    # Betting endpoints
     api.add_resource(PlaceBet, '/api/bets/place')
-    api.add_resource(UserBetList, '/api/bets') # Endpoint to view user's bets
-    api.add_resource(UserBankrollHistoryList, '/api/user/bankroll-history') # Endpoint for history
-    api.add_resource(AIBotBetList, '/api/ai-bot/bets') # Endpoint for AI bot's bets
-    api.add_resource(AIBotBankrollHistory, '/api/ai-bot/bankroll-history') # Endpoint for AI bot's bankroll history
-
-    #simulate reults routes
-    api.add_resource(SimulateResult, '/api/admin/matches/<int:match_id>/simulate-result')
-
-    # Add Leaderboard route
-    api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
-
-    # Add AI Predictions route
+    api.add_resource(UserBetList, '/api/bets')
+    
+    # AI Bot endpoints
+    api.add_resource(AIBotBetList, '/api/ai-bot/bets')
+    api.add_resource(AIBotBankrollHistory, '/api/ai-bot/bankroll-history')
     api.add_resource(AIPredictionsByRound, '/api/ai-predictions/year/<int:year>/round/<int:round_number>')
 
-    # --- Add SSE Route directly to app ---
+    # Leaderboard endpoints
+    api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
+
+    # Server-Sent Events endpoint
     @app.route('/api/stream/updates')
     def sse_stream():
-        # stream_with_context is important for generators with app context needs
-        # though our current generator is simple and might not need it explicitly
-        # if it doesn't access current_app or g.
         return Response(stream_with_context(sse_event_stream_generator()), mimetype='text/event-stream')
 
     print("---API AND SSE ROUTES INITIALISED---")
-
-     # Keep for debugging startup
 

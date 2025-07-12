@@ -1,31 +1,51 @@
 # app/__init__.py
+"""
+Flask Application Factory for NRL Tipping Application Backend
+
+Creates and configures the Flask application with all necessary extensions, scheduled jobs,
+and API routes. Handles database initialization, authentication setup, background task
+scheduling for match data scraping, AI predictions, and bet settlement automation.
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import os
+import random
+import logging
+from datetime import datetime, timezone, timedelta
+
 from flask import Flask, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
-from flask_restful import Api  # <<< Import Api
+from flask_restful import Api  
 from flask_cors import CORS
-from flask_bcrypt import Bcrypt # Import Bcrypt
-from flask_jwt_extended import JWTManager # Import JWTManager
+from flask_bcrypt import Bcrypt 
+from flask_jwt_extended import JWTManager 
 from flask_apscheduler import APScheduler
-from authlib.integrations.flask_client import OAuth # Import OAuth
-from datetime import datetime, timezone # Need datetime/timezone
-from app.config import config_by_name
-from apscheduler.jobstores.base import JobLookupError
-import random
-from datetime import datetime, timezone, timedelta
-from app.sse_events import announce_event
+from authlib.integrations.flask_client import OAuth 
 
-import logging # Use logging
+from app.config import config_by_name
+from app.sse_events import announce_event
+from apscheduler.jobstores.base import JobLookupError
+
 log = logging.getLogger(__name__)
 
+# =============================================================================
+# FLASK EXTENSION INSTANCES
+# =============================================================================
 db = SQLAlchemy()
 migrate = Migrate()
-api_restful = Api() # <<< Instantiate Api HERE, outside the factory
-bcrypt = Bcrypt() # Instantiate Bcrypt
-jwt = JWTManager() # Instantiate JWTManager
-oauth = OAuth() # Instantiate OAuth
+api_restful = Api() 
+bcrypt = Bcrypt() 
+jwt = JWTManager() 
+oauth = OAuth() 
 scheduler = APScheduler()
+
+# =============================================================================
+# SCHEDULED JOB FUNCTIONS
+# =============================================================================
+
 
 def check_and_process_rounds_job():
     """
@@ -33,10 +53,10 @@ def check_and_process_rounds_job():
     and triggers the bankroll update process for them.
     Also handles transitioning 'Active' rounds to 'Completed'.
     """
-    app = scheduler.app # Get the app instance
+    app = scheduler.app 
     with app.app_context():
         print(f"--- Running Round Check Job at {datetime.now(timezone.utc)} ---")
-        from app.models import Round # Import models inside context
+        from app.models import Round #
         from app.services.round_service import process_round_start
         from app import db
 
@@ -72,7 +92,7 @@ def check_and_process_rounds_job():
              print("No upcoming rounds found that need to start.")
 
 
-        # --- Process Rounds Finishing Now (Optional - could be separate job) ---
+        # --- Process Rounds Finishing Now) ---
         rounds_to_complete = Round.query.filter(
              Round.status == 'Active',
              Round.end_date <= now
@@ -81,7 +101,6 @@ def check_and_process_rounds_job():
         if rounds_to_complete:
              print(f"Found {len(rounds_to_complete)} round(s) to complete.")
              for round_obj in rounds_to_complete:
-                 # Basic status update. Settlement should be triggered by match results, not round end.
                  round_obj.status = 'Completed'
                  db.session.add(round_obj)
                  print(f"Updated Round {round_obj.round_number} status to Completed.")
@@ -98,14 +117,13 @@ def check_and_process_rounds_job():
 
 # --- High-Frequency Job for a Single Match ---
 def scrape_specific_match_result_job(match_id_to_scrape):
-    app = scheduler.app # Get app instance from scheduler
+    app = scheduler.app 
 
     with app.app_context():
-        job_log_prefix = f"[Scrape Job MatchID:{match_id_to_scrape}]" # For clearer logs
+        job_log_prefix = f"[Scrape Job MatchID:{match_id_to_scrape}]" 
         log.info(f"{job_log_prefix} Running.")
-        from app.models import Match # Import inside context
+        from app.models import Match 
         from app import db
-        # Import service and settlement functions here too
         from app.services.results_scraper_service import fetch_match_result
         from app.api.settlement import settle_bets_for_match
 
@@ -125,7 +143,7 @@ def scrape_specific_match_result_job(match_id_to_scrape):
         try:
             # Prepare identifier dict for the service function
             match_identifier_details = {
-                'round_number': match.round.round_number, # Access via relationship
+                'round_number': match.round.round_number, 
                 'year': match.round.year,
                 'home_team': match.home_team,
                 'away_team': match.away_team,
@@ -138,7 +156,7 @@ def scrape_specific_match_result_job(match_id_to_scrape):
 
             if status == 'Error':
                 log.error(f"{job_log_prefix} Scraper service returned error. Job will retry.")
-                return # Let the scheduler retry later
+                return 
 
             original_db_status = match.status # Store original status
 
@@ -173,7 +191,7 @@ def scrape_specific_match_result_job(match_id_to_scrape):
                  log.info(f"{job_log_prefix} DB Status changing from '{match.status}' to '{status}'.")
                  match.status = status
                  db.session.add(match)
-                 db.session.commit() # Commit status change promptly
+                 db.session.commit() 
 
             # Check if finished and trigger settlement if needed
             if status == 'Finished' and original_db_status != 'Completed':
@@ -197,8 +215,6 @@ def scrape_specific_match_result_job(match_id_to_scrape):
                 else:
                      log.warning(f"{job_log_prefix} Match 'Finished' but scores invalid ({home_score}-{away_score}). Settlement skipped, job will retry.")
 
-                
-
             # Handle removal for other terminal states if status was just updated
             if status in ['Postponed', 'Cancelled'] and original_db_status != status:
                   log.info(f"{job_log_prefix} Match is {status}. Removing job.")
@@ -214,11 +230,9 @@ def check_for_live_matches_job():
     app = scheduler.app
     with app.app_context():
         log.info(f"--- Running Live Match Check Job at {datetime.now(timezone.utc)} ---")
-        from app.models import Match # Import inside context
-
+        from app.models import Match 
         now = datetime.now(timezone.utc)
 
-        # Define the window more carefully
         # Start checking slightly before kickoff, check for a few hours after
         start_window = now - timedelta(hours=3) # Check games started up to 3 hours ago
         end_window = now + timedelta(minutes=10) # Check games starting in the next 10 mins
@@ -244,38 +258,20 @@ def check_for_live_matches_job():
                         func=scrape_specific_match_result_job,
                         args=[match.match_id],
                         trigger='interval',
-                        minutes=0.5, # High frequency
+                        minutes=0.5, # frequenty check when match is live
                         next_run_time=datetime.now(timezone.utc) + timedelta(seconds=random.randint(3,10)) # Stagger start slightly
                     )
-                # else: Job already exists, let it run its course
+                # else: Job already exists
             except Exception as e_sched:
                  log.error(f"Error scheduling job for match {match.match_id}: {e_sched}", exc_info=True)
 
         log.info("--- Live Match Check Job Finished ---")
 
-def run_ai_for_current_round():
-    """Finds the current active/upcoming round and runs the AI service for it."""
-    from app.models import Round
-    from app.services.ai_prediction_service import run_ai_predictions_for_round
-    from datetime import datetime, timezone
-
-    # Find the active round, or the next upcoming one
-    now = datetime.now(timezone.utc)
-    target_round = Round.query.filter_by(status='Active').first()
-    if not target_round:
-        target_round = Round.query.filter(Round.start_date > now).order_by(Round.start_date.asc()).first()
-
-    if target_round:
-        run_ai_predictions_for_round(target_round.round_number, target_round.year)
-    else:
-        log.warning("AI JOB: No active or upcoming round found to make predictions for.")
-
-
 def ai_prediction_job():
     """
     Automated AI prediction job that finds the current round and runs predictions.
     """
-    app = scheduler.app  # Get the app instance
+    app = scheduler.app 
     with app.app_context():
         print(f"--- Running AI Prediction Job at {datetime.now(timezone.utc)} ---")
         try:
@@ -306,7 +302,7 @@ def ai_prediction_job():
                     year=current_round.year
                 )
                 if success:
-                    print(f"✅ AI predictions processed successfully for Round {current_round.round_number}")
+                    print(f" AI predictions processed successfully for Round {current_round.round_number}")
                     # Force commit to ensure data is saved
                     from app import db
                     db.session.commit()
@@ -316,12 +312,12 @@ def ai_prediction_job():
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
                 else:
-                    print(f"❌ AI predictions failed for Round {current_round.round_number}")
+                    print(f" AI predictions failed for Round {current_round.round_number}")
             else:
-                print("⚠️  No suitable round found for AI predictions")
+                print("No suitable round found for AI predictions")
                 
         except Exception as e:
-            print(f"❌ Error in AI prediction job: {e}")
+            print(f" Error in AI prediction job: {e}")
             import traceback
             traceback.print_exc()
             # Rollback on error
@@ -330,22 +326,42 @@ def ai_prediction_job():
         
         print(f"--- AI Prediction Job completed at {datetime.now(timezone.utc)} ---")
 
-def create_app(config_name=None):
-    if config_name is None:
-        config_name = os.getenv('FLASK_ENV', 'development')
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
 
-    app = Flask(__name__)
-    app.config.from_object(config_by_name[config_name])
-    print(f"--- Using database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')} ---")
+def run_ai_for_current_round():
+    """Finds the current active/upcoming round and runs the AI service for it."""
+    from app.models import Round
+    from app.services.ai_prediction_service import run_ai_predictions_for_round
+    from datetime import datetime, timezone
 
-    # --- Initialize extensions with the app object ---
+    # Find the active round, or the next upcoming one
+    now = datetime.now(timezone.utc)
+    target_round = Round.query.filter_by(status='Active').first()
+    if not target_round:
+        target_round = Round.query.filter(Round.start_date > now).order_by(Round.start_date.asc()).first()
+
+    if target_round:
+        run_ai_predictions_for_round(target_round.round_number, target_round.year)
+    else:
+        log.warning("AI JOB: No active or upcoming round found to make predictions for.")
+
+# =============================================================================
+# FLASK EXTENSIONS INITIALIZATION
+# =============================================================================
+
+def _initialize_extensions(app):
+    """Initialize Flask extensions with the app instance."""
     db.init_app(app)
     migrate.init_app(app, db)
     bcrypt.init_app(app)
     jwt.init_app(app)
     oauth.init_app(app)
-    scheduler.init_app(app) # Initialize scheduler first
+    scheduler.init_app(app)
 
+def _configure_cors(app):
+    """Configure CORS settings for the application."""
     frontend_url = app.config.get('FRONTEND_URL') 
 
     local_origins = [
@@ -361,7 +377,6 @@ def create_app(config_name=None):
     else:
         app.logger.warning("FRONTEND_URL environment variable not set. Production CORS might fail.")
 
-    # Initialize CORS with the final list of origins
     CORS(app, resources={
         r"/api/*": {
             "origins": allowed_origins,
@@ -371,26 +386,35 @@ def create_app(config_name=None):
         }
     }, supports_credentials=True)
 
-    # Register Google OAuth client with Authlib
+def _configure_oauth(app):
+    """Configure OAuth settings for Google authentication."""
     oauth.register(
         name='google',
         client_id=app.config.get('GOOGLE_CLIENT_ID'),
         client_secret=app.config.get('GOOGLE_CLIENT_SECRET'),
-        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration', # Discovery URL
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
         client_kwargs={
-            'scope': 'openid email profile' # Scopes determine what info you ask for
+            'scope': 'openid email profile'
         }
     )
 
+# =============================================================================
+# API ROUTES INITIALIZATION
+# =============================================================================
+
+def _initialize_api_routes(app):
+    """Initialize API routes and resources."""
     api = Api(app)
     from app.api.routes import initialize_routes
-    initialize_routes(app, api) # Add all your API resources
+    initialize_routes(app, api)
     app.logger.info("--- Flask-RESTful API Routes Initialized ---")
 
-    # --- Schedule Jobs ---
-    
-    
-    # Round Management Job
+# =============================================================================
+# SCHEDULED JOBS CONFIGURATION
+# =============================================================================
+
+def _schedule_round_management_job():
+    """Schedule the round management job for bankroll processing."""
     job_id_rounds = 'round_management_job'
     if not scheduler.get_job(job_id_rounds):
         print(f"Scheduling job '{job_id_rounds}' (Bankroll Bonus).")
@@ -398,13 +422,14 @@ def create_app(config_name=None):
             id=job_id_rounds, 
             func=check_and_process_rounds_job,
             trigger='interval', 
-            minutes=720, # Or your desired interval
+            minutes=720,
             replace_existing=True
         )
     else:
         print(f"Job '{job_id_rounds}' already scheduled.")
 
-    # --- Schedule Odds Scraper Job ---
+def _schedule_odds_scraper_job(app):
+    """Schedule the odds scraper job for updating match odds."""
     from app.services.odds_scraper_service import update_matches_from_odds_scraper
 
     odds_job_id = 'odds_update_job'
@@ -415,13 +440,14 @@ def create_app(config_name=None):
                 id=odds_job_id,
                 func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
                 trigger='interval', 
-                minutes=60, # Or your desired interval
+                minutes=60,
                 replace_existing=True
             )
         else:
             print(f"Job '{odds_job_id}' already scheduled.")
 
-    # --- Schedule live match Check Job ---
+def _schedule_live_match_check_job(app):
+    """Schedule the live match checking job."""
     primary_job_id = 'live_match_check_job'
     if app.config.get("ENV") != "testing":
         if not scheduler.get_job(primary_job_id):
@@ -430,24 +456,23 @@ def create_app(config_name=None):
                 id=primary_job_id, 
                 func=check_for_live_matches_job,
                 trigger='interval',
-                minutes=30, # Or your desired interval
+                minutes=30,
                 replace_existing=True
             )
         else:
             print(f"Job '{primary_job_id}' already scheduled.")
 
-    # --- Schedule AI Prediction Job ---
+def _schedule_ai_prediction_job():
+    """Schedule the AI prediction job."""
     from app.services.ai_prediction_service import run_ai_predictions_for_round 
     ai_job_id = 'ai_prediction_job'
     if not scheduler.get_job(ai_job_id):
-        print(f"Scheduling job '{ai_job_id}' to run in 10 minutes for testing.")
-        # Schedule to run in 10 minutes for testing
-        #next_run = datetime.now(timezone.utc) + timedelta(minutes=10)
+        print(f"Scheduling job '{ai_job_id}' to run on Wednesdays at 00:00:00.")
         scheduler.add_job(
             id=ai_job_id,
             func=ai_prediction_job,
             trigger='cron',
-            day_of_week='wed',  # Tuesday
+            day_of_week='wed',
             hour=0,
             minute=0,
             second=0,
@@ -456,17 +481,17 @@ def create_app(config_name=None):
     else:
         print(f"Job '{ai_job_id}' already scheduled.")
 
-    # --- Schedule Historical Data Update Job ---
+def _schedule_historical_data_update_job(app):
+    """Schedule the historical data update job."""
     from app.services.historical_data_updater import auto_update_after_round_completion
     update_job_id = 'historical_data_update_job'
     if not scheduler.get_job(update_job_id):
         print(f"Scheduling job '{update_job_id}' to run on Tuesdays at 00:00:00.")
-        # Schedule to run weekly on Tuesdays at midnight to update historical data with completed matches
         scheduler.add_job(
             id=update_job_id,
             func=lambda: app.app_context().push() or auto_update_after_round_completion(),
             trigger='cron',
-            day_of_week='tue',  # Tuesday
+            day_of_week='tue',
             hour=0,
             minute=0,
             second=0,
@@ -475,7 +500,8 @@ def create_app(config_name=None):
     else:
         print(f"Job '{update_job_id}' already scheduled.")
 
-    # Start the scheduler AFTER all jobs have been added
+def _start_scheduler(app):
+    """Start the APScheduler if not already running."""
     if not scheduler.running:
         try:
             scheduler.start()
@@ -484,9 +510,51 @@ def create_app(config_name=None):
             app.logger.error(f"Failed to start scheduler: {e}", exc_info=True)
     else:
         app.logger.info("Scheduler already running.")
-    
-    # --- End Job Scheduling ---
 
+# =============================================================================
+# MAIN APPLICATION FACTORY
+# =============================================================================
+
+def create_app(config_name=None):
+    """
+    Application factory function that creates and configures the Flask app.
+    
+    Args:
+        config_name (str): Configuration environment name ('development', 'production', etc.)
+        
+    Returns:
+        Flask: Configured Flask application instance
+    """
+    if config_name is None:
+        config_name = os.getenv('FLASK_ENV', 'development')
+
+    app = Flask(__name__)
+    app.config.from_object(config_by_name[config_name])
+    print(f"--- Using database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')} ---")
+
+    # Initialize Flask extensions
+    _initialize_extensions(app)
+    
+    # Configure CORS
+    _configure_cors(app)
+    
+    # Configure OAuth
+    _configure_oauth(app)
+    
+    # Initialize API routes
+    _initialize_api_routes(app)
+
+    # Schedule all background jobs
+    _schedule_round_management_job()
+    _schedule_odds_scraper_job(app)
+    _schedule_live_match_check_job(app)
+    _schedule_ai_prediction_job()
+    _schedule_historical_data_update_job(app)
+    
+    # Start the scheduler
+    _start_scheduler(app)
+
+    # Debug route information in development
     if app.debug or os.environ.get("FLASK_ENV") == "development":
         app.logger.info("--- Final Registered Routes (app.url_map) ---")
         for rule in app.url_map.iter_rules():
@@ -494,5 +562,4 @@ def create_app(config_name=None):
         app.logger.info("----------------------------------------------------------")
 
     app.logger.info("--- App Creation Complete ---")
-
     return app

@@ -1,4 +1,16 @@
 # app/services/results_scraper_service.py
+"""
+NRL Match Results Scraper Service
+
+Web scrapes NRL.com for live match data, scores, and status updates via beautifulSoup. Handles match
+identification, status parsing, and result fetching for real-time match tracking.
+Supports schedule population from NRL.com and automatic result updates for completed
+matches with comprehensive error handling and logging.
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import requests
 import json
 from bs4 import BeautifulSoup
@@ -8,9 +20,15 @@ from app.models import Match, Round
 from app import db
 from app.utils.text_utils import normalize_team_name
 
-# Configure basic logging
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] %(message)s')
-log = logging.getLogger(__name__) # Create a logger specific to this module
+log = logging.getLogger(__name__)
+
+# =============================================================================
+# WEB SCRAPING FUNCTIONS
+# =============================================================================
 
 def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
     """Fetches and parses fixture data for a specific round from NRL.com."""
@@ -49,9 +67,11 @@ def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
     except Exception as e:
         log.error(f"Unexpected error fetching NRL fixture data for Round {round_num}, Year {year}: {e}", exc_info=True) # Log traceback
         return None
-    
 
-# test when nrl match live to find values for match/state 
+# =============================================================================
+# DATA PARSING AND UTILITY FUNCTIONS
+# =============================================================================
+
 def parse_match_status(match_mode, match_state):
     """Translates NRL API status fields to our application's status."""
     mode = str(match_mode).lower() if match_mode is not None else ''
@@ -62,7 +82,7 @@ def parse_match_status(match_mode, match_state):
     elif mode == 'live' or state == 'live':
         return 'Live'
     elif mode == 'pre' and state == 'upcoming':
-        return 'Scheduled' # Matches our default status
+        return 'Scheduled' 
     elif state == 'postponed':
         return 'Postponed'
     elif state == 'cancelled' or state == 'abandoned':
@@ -70,9 +90,10 @@ def parse_match_status(match_mode, match_state):
     else:
         log.warning(f"Unmapped match status - Mode='{match_mode}', State='{match_state}'")
         return 'Unknown'
-    
 
-    
+# =============================================================================
+# MATCH RESULT FETCHING FUNCTIONS
+# =============================================================================
 def fetch_match_result(match_identifier_details: dict):
     """
     Fetches data for the round the match is in, finds the specific match,
@@ -109,34 +130,11 @@ def fetch_match_result(match_identifier_details: dict):
         if fixture.get("type") != "Match":
             continue
 
-        # Extract details safely using .get()
         scraped_home = fixture.get('homeTeam', {}).get('nickName', '').strip()
         scraped_away = fixture.get('awayTeam', {}).get('nickName', '').strip()
         scraped_kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
 
-        # # --- TEMPORARY TEST OVERRIDE ---
-        # # Check if this is our specific test match (Wests Tigers vs Raiders in Round 16, 2025)
-        # # You might need to adjust based on the exact canonical names after normalization
-        is_test_match = (db_home_team == "Roosters" and db_away_team == "Cowboys" and
-                         db_round == 16 and db_year == 2025)
-
-        if is_test_match:
-            log.info(f"TESTING OVERRIDE: Forcing live data for {db_home_team} vs {db_away_team}")
-            # Create a fake fixture entry that matches your DB's manually set start_time
-            # and has the desired live status/scores.
-            found_match_data = {
-                "type": "Match",
-                "matchMode": "Live", # Simulate LIVE
-                "matchState": "Live",# Simulate LIVE
-                "homeTeam": {"nickName": db_home_team, "score": 12}, # Simulate scores
-                "awayTeam": {"nickName": db_away_team, "score": 0},
-                "clock": {"kickOffTimeLong": db_start_time.isoformat().replace('+00:00', 'Z')} # Use DB start time
-            }
-            break # Found our forced match
-        # # --- END TEMPORARY TEST OVERRIDE ---
-
         # --- Matching Logic ---
-        # Compare case-insensitively for robustness
         if db_home_team.lower() == scraped_home.lower() and db_away_team.lower() == scraped_away.lower():
             # Check start time proximity
             if scraped_kickoff_str:
@@ -161,14 +159,14 @@ def fetch_match_result(match_identifier_details: dict):
 
     if not found_match_data:
         log.warning(f"Could not find matching fixture data in fetched list for R{db_round}: {db_home_team} vs {db_away_team}")
-        # Could be the data isn't live yet, or matching failed. Return 'Unknown' not 'Error'.
         return 'Unknown', None, None
 
     # --- Extract results from the matched fixture ---
     status = parse_match_status(
-        found_match_data.get('matchMode'),
+        found_match_data.get('matchMode'), 
         found_match_data.get('matchState')
     )
+
     home_score_raw = found_match_data.get('homeTeam', {}).get('score')
     away_score_raw = found_match_data.get('awayTeam', {}).get('score')
 
@@ -189,7 +187,10 @@ def fetch_match_result(match_identifier_details: dict):
     log.info(f"Parsed result for {db_home_team} vs {db_away_team}: Status='{status}', Score={home_score}-{away_score}")
     return status, home_score, away_score
 
-## populate db
+# =============================================================================
+# DATABASE POPULATION FUNCTIONS
+# =============================================================================
+
 def populate_schedule_from_nrl_com(start_round, end_round, year, competition='111'):
     """
     Populates Rounds and Matches from NRL.com data for a given range.
@@ -199,20 +200,21 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
     rounds_created = 0
     matches_created = 0
     matches_updated = 0
-    results_populated = 0 # New counter
+    results_populated = 0 
 
-    current_time_utc = datetime.now(timezone.utc) # Get current time once for comparison
+    current_time_utc = datetime.now(timezone.utc) 
 
     for round_num_to_fetch in range(start_round, end_round + 1):
         log.info(f"Processing Round {round_num_to_fetch} for Year {year} from NRL.com")
-        # Fetch fixtures for the entire round ONCE
+        
+        # --- FETCH ROUND DATA ---
         round_fixtures_data = _fetch_nrl_round_data_from_web(round_num=round_num_to_fetch, year=year, competition=competition)
 
         if not round_fixtures_data:
             log.warning(f"No fixtures found for Round {round_num_to_fetch}, Year {year} on NRL.com. Skipping.")
             continue
 
-        # --- Find or Create Round from NRL.com data ---
+        # --- ROUND CREATION/UPDATE SECTION ---
         actual_round_title = round_fixtures_data[0].get('roundTitle', '')
         try:
             parsed_round_number = int(actual_round_title.replace('Round ', ''))
@@ -225,7 +227,8 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
         round_obj = Round.query.filter_by(round_number=parsed_round_number, year=year).first()
         round_match_kickoffs = []
 
-        for fixture_item in round_fixtures_data: # Iterate over the already fetched round_fixtures_data
+        # --- COLLECT KICKOFF TIMES FOR ROUND DATE ESTIMATION ---
+        for fixture_item in round_fixtures_data:
             if fixture_item.get("type") != "Match":
                 continue
             kickoff_str = fixture_item.get('clock', {}).get('kickOffTimeLong')
@@ -236,10 +239,10 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                 except ValueError:
                     log.warning(f"Invalid kickoff time format '{kickoff_str}' for a match in Round {parsed_round_number}. Skipping for round date estimation.")
 
+        # --- CREATE OR UPDATE ROUND RECORD ---
         if not round_match_kickoffs:
             log.warning(f"No valid kickoff times found for Round {parsed_round_number}, Year {year} to estimate round dates. Skipping round creation/update.")
-            # continue # If you want to skip round creation. Or proceed if round might already exist.
-        else: # Only try to create/update round if kickoffs were found
+        else:
             min_kickoff = min(round_match_kickoffs)
             max_kickoff = max(round_match_kickoffs)
 
@@ -267,12 +270,12 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
             log.error(f"Cannot process matches for Round {parsed_round_number} as round_obj is not available.")
             continue
 
-
-        # --- Process Matches for this Round from NRL.com ---
-        for fixture in round_fixtures_data: # Iterate over the already fetched round_fixtures_data
+        # --- MATCH CREATION/UPDATE SECTION ---
+        for fixture in round_fixtures_data:
             if fixture.get("type") != "Match":
                 continue
 
+            # --- EXTRACT FIXTURE DATA ---
             home_team_name = fixture.get('homeTeam', {}).get('nickName', '').strip()
             away_team_name = fixture.get('awayTeam', {}).get('nickName', '').strip()
             kickoff_str = fixture.get('clock', {}).get('kickOffTimeLong')
@@ -289,13 +292,13 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                 log.warning(f"Invalid kickoff time format '{kickoff_str}' for {home_team_name} vs {away_team_name}. Skipping match.")
                 continue
 
+            # --- FIND OR CREATE MATCH RECORD ---
             db_match = Match.query.filter_by(
                 round_id=round_obj.round_id,
                 home_team=home_team_name,
                 away_team=away_team_name
             ).first()
 
-            # Initial status from the main schedule scrape
             current_schedule_status = parse_match_status(fixture.get('matchMode'), fixture.get('matchState'))
 
             if not db_match:
@@ -312,11 +315,11 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                 db.session.add(db_match)
                 matches_created += 1
                 try:
-                    db.session.flush() # Ensure db_match.match_id is available if needed immediately
+                    db.session.flush() 
                 except Exception as e_flush_match:
                     log.error(f"Error flushing new Match {home_team_name} vs {away_team_name}: {e_flush_match}", exc_info=True)
-                    db.session.rollback() # Rollback this specific match add
-                    continue # Skip to next fixture
+                    db.session.rollback() 
+                    continue 
             else:
                 update_this_match = False
                 if db_match.start_time != start_time_dt:
@@ -335,8 +338,7 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                     db_match.venue_city = venue_city
                     update_this_match = True
                 
-                # Update status from schedule if it's a non-terminal, relevant update
-                # and our DB status isn't already 'Completed'
+                # Update status from schedule if it's a non-terminal, relevant update and our DB status isn't already 'Completed'
                 if current_schedule_status in ['Live', 'Postponed', 'Cancelled'] and \
                    db_match.status != current_schedule_status and \
                    db_match.status != 'Completed':
@@ -345,10 +347,11 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                     update_this_match = True
                 
                 if update_this_match:
-                    db.session.add(db_match) # Add to session for potential commit
+                    db.session.add(db_match) 
                     matches_updated +=1
 
-            # --- NEW: Check if match is in the past and not yet 'Completed', then fetch results ---
+            # --- HISTORICAL RESULTS POPULATION ---
+            # Check if match is in the past and not yet 'Completed', then fetch results
             if db_match and start_time_dt < current_time_utc and db_match.status != 'Completed':
                 log.info(f"Match {db_match.home_team} vs {db_match.away_team} (ID: {db_match.match_id}) is in the past ({start_time_dt}) and not 'Completed'. Attempting to fetch results.")
                 
@@ -360,16 +363,15 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                     'start_time': db_match.start_time # Use start_time from DB match object
                 }
                 
-                # fetch_match_result internally calls _fetch_nrl_round_data_from_web again.
-                # This is okay but less efficient if you could reuse the `fixture` data.
-                # However, fetch_match_result is designed to be self-contained.
+                # Note: fetch_match_result internally calls _fetch_nrl_round_data_from_web again.
+                # This is less efficient but ensures fetch_match_result remains self-contained.
                 result_status, home_score, away_score = fetch_match_result(match_identifier)
 
                 if result_status == 'Finished' and home_score is not None and away_score is not None:
                     log.info(f"Populating results for past match {db_match.home_team} vs {db_match.away_team}: {home_score}-{away_score}, Status: Completed")
                     db_match.result_home_score = home_score
                     db_match.result_away_score = away_score
-                    db_match.status = 'Completed' # Directly set to Completed
+                    db_match.status = 'Completed'
                     # Determine winner for the match record
                     if home_score > away_score:
                         db_match.winner = db_match.home_team
@@ -380,13 +382,13 @@ def populate_schedule_from_nrl_com(start_round, end_round, year, competition='11
                     db.session.add(db_match) # Add to session for commit
                     results_populated += 1
                 elif result_status != 'Error' and result_status != 'Unknown':
-                    # If the result scraper found a status like 'Live', 'Postponed', etc.,
-                    # and it's different from current DB status (and not 'Completed')
                     if db_match.status != result_status and result_status not in ['Scheduled', 'Finished']:
                         log.info(f"Updating status for past match {db_match.home_team} vs {db_match.away_team} to '{result_status}' based on result scraper.")
                         db_match.status = result_status
                         db.session.add(db_match)
-                # Else: Error or Unknown, or not Finished. Leave match as is or as updated by schedule.
+
+    
+    # --- FINAL DATABASE COMMIT ---
     try:
         db.session.commit()
     except Exception as e_commit:

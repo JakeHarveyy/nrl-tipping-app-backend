@@ -1,13 +1,20 @@
 """
-NRL Match Prediction Pipeline
-============================
-Processes upcoming matches and generates model-ready features for prediction.
+Transforms upcoming matches into model-ready features using historical context.
 
-This script:
-1. Loads the complete historical dataset with all features
-2. Appends upcoming matches (with odds from your database)
-3. Calculates features for new matches only
-4. Outputs prediction-ready features
+Core Functions:
+- NRLPredictionPipeline(): Main pipeline class for feature generation
+- load_upcoming_matches(): Filters future matches requiring predictions
+- calculate_features_for_new_matches(): Applies rolling stats, Elo ratings, rest/travel factors
+- extract_prediction_features(): Creates difference features and market intelligence
+- run_prediction_pipeline(): Complete end-to-end processing workflow
+
+Process Flow:
+1. Combine historical data with upcoming matches for temporal context
+2. Calculate rolling features using complete team history (prevents data leakage)
+3. Generate strength metrics (Elo ratings, form differences, contextual factors)
+4. Output ML-ready DataFrame with 20+ prediction features
+
+Backend Integration: Supports both CSV file input and DataFrame input from backend services.
 """
 
 import pandas as pd

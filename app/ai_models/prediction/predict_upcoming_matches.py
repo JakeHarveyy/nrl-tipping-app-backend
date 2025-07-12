@@ -1,8 +1,20 @@
 """
-NRL Match Prediction Service
-============================
-Backend-compatible service for generating AI betting recommendations.
-Designed to work with DataFrames provided by the backend service.
+Generates AI-powered betting recommendations for upcoming NRL matches.
+
+Core Functions:
+- predict_upcoming_matches(): Main prediction pipeline for backend integration
+- load_trained_model(): Loads pre-trained ML model and feature scaler
+- make_predictions(): Generates win probabilities and betting recommendations
+- calculate_kelly_criterion(): Optimal stake sizing using Kelly Criterion formula
+- display_betting_opportunities(): Formatted output of high-confidence bets
+
+Features:
+- Model confidence thresholds (52%+ for betting recommendations)
+- Kelly Criterion position sizing for bankroll management
+- Risk categorisation (Very High, High, Medium, Low confidence levels)
+- Backend-compatible DataFrame input/output for seamless API integration
+
+Output: Structured betting recommendations with probabilities, stakes, and confidence levels.
 """
 
 import pandas as pd

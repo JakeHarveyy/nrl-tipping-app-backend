@@ -1,10 +1,25 @@
-# app/models.py
+
+"""
+Database Models for NRL Tipping Application Backend
+
+This file defines the SQLAlchemy ORM models that represent the core data structures
+for the NRL tipping application. It includes models for:
+
+- User: User accounts with authentication, bankroll management, and Google OAuth support
+- Round: NRL competition rounds with season/year tracking
+- Match: Individual NRL matches with teams, odds, venues, and results
+- Bet: User betting records with amounts, odds, and settlement tracking
+- BankrollHistory: Audit trail of all bankroll changes and transactions
+- AIPrediction: AI model predictions and betting recommendations for matches
+
+These models support the application's core features including user management,
+match data storage, betting functionality, financial tracking, and AI-powered
+predictions for NRL matches.
+"""
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from app import db, bcrypt
-# Import bcrypt later when needed for passwords
-# from flask_bcrypt import Bcrypt
-# bcrypt = Bcrypt()
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -23,21 +38,16 @@ class User(db.Model):
     bets = db.relationship('Bet', backref='user', lazy='dynamic')
     bankroll_history = db.relationship('BankrollHistory', backref='user', lazy='dynamic')
 
-    # Relationships (will be added/used later)
-    # bets = db.relationship('Bet', backref='user', lazy=True)
-    # bankroll_history = db.relationship('BankrollHistory', backref='user', lazy=True)
-
     def __repr__(self):
         return f"<User {self.username}>"
 
-    # Add password hashing/checking methods later
     def set_password(self, password):
         """Hashes the password and stores it"""
         self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
 
     def check_password(self, password):
         """Checks if the provided password matches the stored hash"""
-        if not self.password_hash: # User might only have Google login
+        if not self.password_hash: 
              return False
         return bcrypt.check_password_hash(self.password_hash, password)
     
@@ -70,7 +80,7 @@ class Round(db.Model):
     end_date = db.Column(db.DateTime(timezone=True), nullable=False)
     status = db.Column(db.String(20), nullable=False, default='Upcoming', index=True) # Upcoming, Active, Completed
 
-    matches = db.relationship('Match', backref='round', lazy='dynamic') # Use dynamic for large collections
+    matches = db.relationship('Match', backref='round', lazy='dynamic')
 
     __table_args__ = (db.UniqueConstraint('round_number', 'year', name='uq_round_number_year'),)
 
@@ -105,21 +115,17 @@ class Match(db.Model):
     result_away_score = db.Column(db.Integer, nullable=True)
     winner = db.Column(db.String(100), nullable=True) # Home Team Name, Away Team Name, or 'Draw'
     last_odds_update = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    # Relationships (will be added/used later)
-    # bets = db.relationship('Bet', backref='match', lazy=True)
     bets = db.relationship('Bet', backref='match', lazy='dynamic')
 
     def __repr__(self):
         return f"<Match {self.home_team} vs {self.away_team} @ {self.start_time}>"
 
     def to_dict(self):
-        # Simple serialization, consider Marshmallow for complex cases
         return {
             'match_id': self.match_id,
             'external_match_id': self.external_match_id,
-            'round_number': self.round.round_number, # Access via relationship
-            'year': self.round.year, # Access via relationship
+            'round_number': self.round.round_number, 
+            'year': self.round.year,
             'home_team': self.home_team,
             'away_team': self.away_team,
             'start_time': self.start_time.isoformat() if self.start_time else None,
@@ -134,16 +140,13 @@ class Match(db.Model):
             'last_odds_update': self.last_odds_update.isoformat() if self.last_odds_update else None
         }
 
-# Add Bet and BankrollHistory models in later phases
 class Bet(db.Model):
     __tablename__ = 'bets'
     bet_id = db.Column(db.Integer, primary_key=True)
     # Foreign Keys linking to User and Match tables
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
     match_id = db.Column(db.Integer, db.ForeignKey('matches.match_id'), nullable=False, index=True)
-    # Store round_id denormalized for easier querying/filtering by round if needed
     round_id = db.Column(db.Integer, db.ForeignKey('rounds.round_id'), nullable=False, index=True)
-
     team_selected = db.Column(db.String(100), nullable=False) # e.g., "Broncos" or "Cowboys"
     amount = db.Column(db.Numeric(10, 2), nullable=False)
     odds_at_placement = db.Column(db.Numeric(6, 3), nullable=False)
@@ -151,8 +154,6 @@ class Bet(db.Model):
     status = db.Column(db.String(20), nullable=False, default='Pending', index=True) # Pending, Active, Won, Lost, Void
     placement_time = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     settlement_time = db.Column(db.DateTime(timezone=True), nullable=True)
-
-    # Relationships are defined via backref in User and Match models
 
     def __repr__(self):
         return f"<Bet {self.bet_id} User:{self.user_id} Match:{self.match_id} Amt:{self.amount} Status:{self.status}>"
@@ -163,7 +164,7 @@ class Bet(db.Model):
             'bet_id': self.bet_id,
             'user_id': self.user_id,
             'match_id': self.match_id,
-            'round_number': self.match.round.round_number, # Access via relationships
+            'round_number': self.match.round.round_number, 
             'home_team': self.match.home_team,
             'away_team': self.match.away_team,
             'match_start_time': self.match.start_time.isoformat(),
@@ -180,16 +181,10 @@ class BankrollHistory(db.Model):
     __tablename__ = 'bankroll_history'
     history_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
-    # Denormalize round_number for easier filtering/reporting later
-    round_number = db.Column(db.Integer, nullable=True) # Nullable if not related to a specific round (e.g., initial deposit)
-
-    change_type = db.Column(db.String(50), nullable=False, index=True)
-    # Examples: 'Initial Deposit', 'Weekly Addition', 'Bet Placement', 'Bet Win', 'Bet Loss', 'Bet Void', 'Admin Adjustment'
-
-    # Link to the bet that caused this change, if applicable
+    round_number = db.Column(db.Integer, nullable=True) 
+    change_type = db.Column(db.String(50), nullable=False, index=True)  # Examples: 'Initial Deposit', 'Weekly Addition', 'Bet Placement', 'Bet Win', 'Bet Loss', 'Bet Void', 'Admin Adjustment'
     related_bet_id = db.Column(db.Integer, db.ForeignKey('bets.bet_id'), nullable=True, index=True)
-    related_bet = db.relationship('Bet', backref='bankroll_history_entries') # Relationship to Bet
-
+    related_bet = db.relationship('Bet', backref='bankroll_history_entries') 
     amount_change = db.Column(db.Numeric(12, 2), nullable=False) # Positive or negative
     previous_balance = db.Column(db.Numeric(12, 2), nullable=False)
     new_balance = db.Column(db.Numeric(12, 2), nullable=False)
@@ -216,27 +211,21 @@ class AIPrediction(db.Model):
     prediction_id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
     match_id = db.Column(db.Integer, db.ForeignKey('matches.match_id'), nullable=False, index=True)
-    
-    # Match details (denormalized for easier querying)
     home_team = db.Column(db.String(100), nullable=False)
     away_team = db.Column(db.String(100), nullable=False)
     match_date = db.Column(db.DateTime(timezone=True), nullable=False)
-    
     # AI Model predictions
     home_win_probability = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
     away_win_probability = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
     predicted_winner = db.Column(db.String(100), nullable=False)
     model_confidence = db.Column(db.Numeric(5, 4), nullable=False)  # 0.0000 to 1.0000
-    
     # Betting recommendation
     betting_recommendation = db.Column(db.String(100), nullable=False)  # "Bet Team" or "No Bet"
     recommended_team = db.Column(db.String(100), nullable=True)  # Team to bet on if recommended
     confidence_level = db.Column(db.String(20), nullable=False)  # "High", "Medium", "Low"
     kelly_criterion_stake = db.Column(db.Numeric(5, 4), nullable=False)  # Recommended stake percentage
-    
     # Metadata
-    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)) 
     # Relationships
     user = db.relationship('User', backref='ai_predictions')
     match = db.relationship('Match', backref='ai_predictions')

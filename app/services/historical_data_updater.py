@@ -1,15 +1,32 @@
 # app/services/historical_data_updater.py
 """
-Service to update historical datasets with completed match results.
-This ensures the AI model always has the most recent data for predictions.
+Historical Data Updater Service for NRL Tipping Application
+
+Updates historical datasets with completed match results to ensure the AI model
+always has the most recent data for predictions. Handles data transformation,
+feature regeneration, and automated updates after round completion.
+
+DATA FLOW:
+1. Loads existing nrl_matches_final_model_ready.csv (model-ready dataset)
+2. Extracts base columns to maintain data consistency
+3. Appends new completed match data from database
+4. Regenerates all features using feature engineering pipeline
+5. Saves updated datasets with automatic backup
+6. AI predictions use the refreshed model-ready data for future rounds
 """
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import pandas as pd
 import os
 import sys
 from datetime import datetime
 import logging
 
-# Add project root to path
+# =============================================================================
+# PATH CONFIGURATION
+# =============================================================================
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -17,7 +34,6 @@ if project_root not in sys.path:
 from app import db
 from app.models import Match, Round
 
-# Add feature engineering to path
 feature_engineering_path = os.path.join(project_root, 'app', 'ai_models', 'prediction')
 if feature_engineering_path not in sys.path:
     sys.path.append(feature_engineering_path)
@@ -33,12 +49,15 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
-# File paths - Use base historical data without features, not the final processed one
-BASE_HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_base_historical_data.csv')
+# =============================================================================
+# FILE PATHS AND CONFIGURATION
+# =============================================================================
 HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_matches_final_model_ready.csv')
 TEAM_STATS_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_team_stats_final_complete.csv')
 
-# Team name mapping (reverse of prediction service)
+# =============================================================================
+# TEAM NAME MAPPING
+# =============================================================================
 MODEL_TO_DB_MAPPING = {
     'Manly Sea Eagles': 'Sea Eagles',
     'South Sydney Rabbitohs': 'Rabbitohs',
@@ -59,10 +78,18 @@ MODEL_TO_DB_MAPPING = {
     'New Zealand Warriors': 'Warriors'
 }
 
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
 def _map_db_to_model_team_name(db_team_name):
     """Map database team name to model training name"""
     db_to_model = {v: k for k, v in MODEL_TO_DB_MAPPING.items()}
     return db_to_model.get(db_team_name, db_team_name)
+
+# =============================================================================
+# MAIN DATA UPDATE FUNCTIONS
+# =============================================================================
 
 def update_historical_data_with_completed_round(round_number, year):
     """
@@ -78,7 +105,7 @@ def update_historical_data_with_completed_round(round_number, year):
     log.info(f"Updating historical data with Round {round_number}, Year {year} results...")
     
     try:
-        # Step 1: Get completed matches from database
+        # --- GET COMPLETED MATCHES FROM DATABASE ---
         completed_matches = Match.query.join(Round).filter(
             Round.round_number == round_number,
             Round.year == year,
@@ -93,34 +120,31 @@ def update_historical_data_with_completed_round(round_number, year):
         
         log.info(f"Found {len(completed_matches)} completed matches to add to historical data")
         
-        # Step 2: Load existing historical data (use base data without features)
-        # First check if we have a base historical file, otherwise use the full featured one
-        if os.path.exists(BASE_HISTORICAL_DATA_PATH):
-            historical_df = pd.read_csv(BASE_HISTORICAL_DATA_PATH)
-            log.info(f"Using base historical data from {BASE_HISTORICAL_DATA_PATH}")
-        else:
-            # Extract just the base columns from the featured dataset
+        # --- LOAD EXISTING HISTORICAL DATA ---
+        if os.path.exists(HISTORICAL_DATA_PATH):
             historical_df = pd.read_csv(HISTORICAL_DATA_PATH)
-            # Keep only the base columns that match what we're adding
+            log.info(f"Loading existing model-ready historical data from {HISTORICAL_DATA_PATH}")
+            # Extract base columns for new data consistency
             base_columns = ['Date', 'Kick-off (local)', 'Home Team', 'Away Team', 'Venue', 'City', 
                           'Home Score', 'Away Score', 'Play Off Game?', 'Over Time?', 'Home Odds', 
                           'Draw Odds', 'Away Odds', 'Winner Team', 'Winner ', 'latitude', 'longitude', 
                           'Home_Win', 'Home_Margin', 'match_id']
             available_base_columns = [col for col in base_columns if col in historical_df.columns]
-            historical_df = historical_df[available_base_columns]
-            log.info(f"Extracted base columns from featured dataset: {len(available_base_columns)} columns")
+            base_df = historical_df[available_base_columns].copy()
+            log.info(f"Extracted base columns for new data: {len(available_base_columns)} columns")
+        else:
+            log.error(f"Historical data file not found: {HISTORICAL_DATA_PATH}")
+            return False
         
-        historical_df['Date'] = pd.to_datetime(historical_df['Date'])
+        base_df['Date'] = pd.to_datetime(base_df['Date'])
         
-        # Step 3: Convert completed matches to historical format
+        # --- CONVERT COMPLETED MATCHES TO HISTORICAL FORMAT ---
         new_match_records = []
         
         for match in completed_matches:
-            # Map team names to model format
             home_team_model = _map_db_to_model_team_name(match.home_team)
             away_team_model = _map_db_to_model_team_name(match.away_team)
             
-            # Determine winner
             home_win = 1 if match.result_home_score > match.result_away_score else 0
             winner_team = home_team_model if home_win else away_team_model
             
@@ -136,54 +160,48 @@ def update_historical_data_with_completed_round(round_number, year):
                 'Play Off Game?': '',
                 'Over Time?': '',
                 'Home Odds': float(match.home_odds) if match.home_odds else None,
-                'Draw Odds': None,  # NRL doesn't have draws
+                'Draw Odds': None,
                 'Away Odds': float(match.away_odds) if match.away_odds else None,
                 'Winner Team': winner_team,
                 'Winner ': 'Home' if home_win else 'Away',
-                'latitude': 0,  # Could be populated from venue data
+                'latitude': 0,
                 'longitude': 0,
                 'Home_Win': home_win,
                 'Home_Margin': match.result_home_score - match.result_away_score,
-                'match_id': len(historical_df) + len(new_match_records)  # Continue ID sequence
+                'match_id': len(base_df) + len(new_match_records)
             }
             new_match_records.append(new_record)
         
-        # Step 4: Append new matches to historical data
+        # --- MERGE NEW MATCHES WITH HISTORICAL DATA ---
         new_matches_df = pd.DataFrame(new_match_records)
-        # Convert new date strings to datetime to match historical data format
         new_matches_df['Date'] = pd.to_datetime(new_matches_df['Date'])
         
-        updated_historical_df = pd.concat([historical_df, new_matches_df], ignore_index=True)
+        updated_historical_df = pd.concat([base_df, new_matches_df], ignore_index=True)
         updated_historical_df = updated_historical_df.sort_values('Date').reset_index(drop=True)
         
         log.info(f"Added {len(new_match_records)} new matches to historical dataset")
         
-        # Step 5: Regenerate all features with updated data
+        # --- REGENERATE ALL FEATURES WITH UPDATED DATA ---
         log.info("Regenerating team-level stats and features...")
         
-        # Create team-level stats
         team_stats_df = create_team_level_stats(updated_historical_df)
         
-        # Calculate all features
         team_stats_enhanced = calculate_rolling_features(team_stats_df)
         team_stats_with_elo = calculate_elo_ratings(team_stats_enhanced)
         team_stats_with_rest = calculate_rest_days(team_stats_with_elo)
         team_stats_final = calculate_travel_distance(team_stats_with_rest)
         
-        # Regenerate match-level features
         final_match_df, core_features = assemble_final_model_ready_dataframe(
             updated_historical_df, team_stats_final
         )
         
-        # Step 6: Save updated datasets
-        # Backup existing files with error handling for Windows file locks
+        # --- SAVE UPDATED DATASETS WITH BACKUP ---
         backup_suffix = datetime.now().strftime("_%Y%m%d_%H%M%S_backup")
         
         historical_backup = HISTORICAL_DATA_PATH.replace('.csv', f'{backup_suffix}.csv')
         team_stats_backup = TEAM_STATS_PATH.replace('.csv', f'{backup_suffix}.csv')
         
         try:
-            # Try to create backups
             if os.path.exists(HISTORICAL_DATA_PATH):
                 os.rename(HISTORICAL_DATA_PATH, historical_backup)
             if os.path.exists(TEAM_STATS_PATH):
@@ -191,11 +209,9 @@ def update_historical_data_with_completed_round(round_number, year):
             log.info(f"📁 Backups created successfully")
         except PermissionError as e:
             log.warning(f"Could not create backup files (file may be in use): {e}")
-            # Continue without backup - overwrite the files directly
             historical_backup = "No backup created"
             team_stats_backup = "No backup created"
         
-        # Save updated files
         final_match_df.to_csv(HISTORICAL_DATA_PATH, index=False)
         team_stats_final.to_csv(TEAM_STATS_PATH, index=False)
         
@@ -209,6 +225,10 @@ def update_historical_data_with_completed_round(round_number, year):
         log.error(f"Error updating historical data: {e}", exc_info=True)
         return False
 
+# =============================================================================
+# AUTOMATED UPDATE FUNCTIONS
+# =============================================================================
+
 def auto_update_after_round_completion():
     """
     Automatically detect completed rounds and update historical data.
@@ -217,21 +237,16 @@ def auto_update_after_round_completion():
     log.info("Checking for completed rounds to update historical data...")
     
     try:
-        # Find recently completed rounds that might need processing
         completed_rounds = Round.query.filter(
             Round.status == 'Completed',
-            Round.year == 2025  # Current season
+            Round.year == 2025
         ).order_by(Round.round_number.desc()).limit(3).all()
         
         if not completed_rounds:
             log.info("No completed rounds found")
             return
         
-        # Process the most recent completed round
         latest_round = completed_rounds[0]
-        
-        # Check if this round's data has already been processed
-        # (You might want to add a flag to track this)
         
         success = update_historical_data_with_completed_round(
             latest_round.round_number, 
@@ -246,12 +261,14 @@ def auto_update_after_round_completion():
     except Exception as e:
         log.error(f"Error in auto-update process: {e}", exc_info=True)
 
+# =============================================================================
+# TESTING AND MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
-    # For testing
     from app import create_app
     app = create_app()
     with app.app_context():
-        # Test with Round 17 which should have completed matches
         print("🧪 Testing historical data update with Round 17...")
         success = update_historical_data_with_completed_round(17, 2025)
         print(f"✅ Update result: {success}")

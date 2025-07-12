@@ -1,3 +1,21 @@
+"""
+NRL Feature Engineering Pipeline
+================================
+Comprehensive feature engineering for NRL match prediction models.
+
+Core Functions:
+- load_and_clean_nrl_data(): Baseline data cleaning and target variable creation
+- create_team_level_stats(): Transform match-level to team-level data for rolling calculations
+- calculate_rolling_features(): Time-series features with data leakage prevention (.shift(1))
+- calculate_elo_ratings(): Dynamic team strength ratings with home field advantage
+- calculate_rest_days(): Recovery time between matches
+- calculate_travel_distance(): Geographic impact for away teams
+- assemble_final_model_ready_dataframe(): Merge all features into ML-ready format
+
+Output: Model-ready datasets with 20+ engineered features for betting predictions.
+Data leakage prevention ensures only historical data informs future predictions.
+"""
+
 import pandas as pd
 import numpy as np
 from datetime import datetime

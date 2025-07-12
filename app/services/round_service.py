@@ -1,3 +1,13 @@
+# app/services/round_service.py
+"""
+Round Management Service for NRL Tipping Application
+
+Handles round lifecycle management including automatic weekly bankroll bonuses ($1000)
+for active users when rounds transition from 'Upcoming' to 'Active' status.
+Provides idempotent processing to prevent duplicate bonus applications and
+maintains complete audit trail through BankrollHistory records.
+"""
+
 from app.models import User, BankrollHistory, Round
 from app import db
 from decimal import Decimal
@@ -26,7 +36,7 @@ def process_round_start(round_obj: Round):
 
     if not users:
         print(f"No active users found for Round {round_number} start.")
-        return True # Not an error if no users exist
+        return True 
 
     print(f"Found {len(users)} active users for Round {round_number} update.")
     added_amount = Decimal('1000.00')
@@ -42,7 +52,6 @@ def process_round_start(round_obj: Round):
         ).first()
 
         if existing_bonus:
-            # print(f"User {user.username} (ID: {user.user_id}) already received bonus for Round {round_number}.")
             already_processed_count += 1
             continue # Skip if bonus already applied for this round
 
@@ -54,19 +63,18 @@ def process_round_start(round_obj: Round):
             # Update user's bankroll
             user.bankroll = new_balance
 
-            # Create history entry
             history_entry = BankrollHistory(
                 user_id=user.user_id,
-                round_number=round_number, # Use the actual round number
+                round_number=round_number, 
                 change_type='Weekly Addition',
                 related_bet_id=None,
                 amount_change=added_amount,
                 previous_balance=previous_balance,
                 new_balance=new_balance,
-                timestamp=datetime.now(timezone.utc) # Timestamp of bonus application
+                timestamp=datetime.now(timezone.utc) 
             )
             db.session.add(history_entry)
-            # Commit per user to isolate failures, though less performant for many users
+            
             db.session.commit()
             log.info(f"Applied bonus for user {user.username} (ID: {user.user_id}). New balance: {new_balance}")
             success_count += 1
@@ -82,7 +90,7 @@ def process_round_start(round_obj: Round):
         except Exception as e:
             db.session.rollback()
             print(f"ERROR applying bonus for user {user.username} (ID: {user.user_id}) for Round {round_number}: {e}")
-            # Optionally: Log this error more formally
+            
 
     print(f"--- Finished Processing Round {round_number}. Applied: {success_count}, Already Processed: {already_processed_count} ---")
-    return True # Indicate processing completed (even if some users failed)
+    return True 

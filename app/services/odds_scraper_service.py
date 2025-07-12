@@ -1,20 +1,36 @@
-#working 1/05/2025
-#pinnacle scraper
-#later intergrate live odd scraping/backup odd scraper
+# app/services/odds_scraper_service.py
+"""
+Pinnacle Odds Scraper Service for NRL Tipping Application
 
+Scrapes live betting odds from Pinnacle API for NRL matches and updates database
+records with current odds data. Handles API authentication, data processing,
+team name normalization, and real-time odds updates with SSE event broadcasting.
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import requests
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
+import logging
+
 from app.models import Match, Round
 from app import db
 from app.utils.text_utils import normalize_team_name
 from app.sse_events import announce_event
-import logging
 
 log = logging.getLogger(__name__)
 
+# =============================================================================
+# API CONFIGURATION
+# =============================================================================
 PINNACLE_API_URL = "https://www.pinnacle.com/config/app.json"
 PINNACLE_MATCHUPS_URL = "https://guest.api.arcadia.pinnacle.com/0.1/leagues/1654/matchups?brandId=0"
+
+# =============================================================================
+# API AUTHENTICATION AND HEADERS
+# =============================================================================
 
 def get_api_key():
     response = requests.get(PINNACLE_API_URL)
@@ -35,14 +51,32 @@ def get_headers(api_key):
         "x-api-key": api_key,
     }
 
+# =============================================================================
+# DATA FETCHING FUNCTIONS
+# =============================================================================
+
 def fetch_matchups(headers):
     try:
-        response = requests.get(PINNACLE_MATCHUPS_URL, headers=headers, timeout=15) # Add timeout
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response = requests.get(PINNACLE_MATCHUPS_URL, headers=headers, timeout=15)
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         print(f"Error fetching matchups: {e}")
-        return None # Return None on error
+        return None
+
+def fetch_game_odds(league_id, headers):
+    URL = f"https://guest.api.arcadia.pinnacle.com/0.1/leagues/{league_id}/markets/straight"
+    try:
+        response = requests.get(URL, headers=headers, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching game odds for league {league_id}: {e}")
+        return None
+
+# =============================================================================
+# DATA FILTERING AND PROCESSING FUNCTIONS
+# =============================================================================
 
 def filter_NRL_matchups(matchups):
     return {
@@ -56,16 +90,6 @@ def filter_NRL_matchups(matchups):
         for matchup in matchups
         if matchup["league"]["name"] == "NRL" and matchup["type"] == "matchup" 
     }
-
-def fetch_game_odds(league_id, headers):
-    URL = f"https://guest.api.arcadia.pinnacle.com/0.1/leagues/{league_id}/markets/straight"
-    try:
-        response = requests.get(URL, headers=headers, timeout=15) # Add timeout
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching game odds for league {league_id}: {e}")
-        return None # Return None on error
 
 def process_game_odds(game_odds, target_matchup_ids):
     """
@@ -98,6 +122,10 @@ def process_game_odds(game_odds, target_matchup_ids):
     
     return result
 
+# =============================================================================
+# ODDS CONVERSION UTILITIES
+# =============================================================================
+
 def american_to_decimal(odd):
     try:
         odd = int(odd) # Ensure it's an integer first
@@ -105,11 +133,14 @@ def american_to_decimal(odd):
             decimal_odds = (Decimal(odd) / 100) + 1
         else:
             decimal_odds = (100 / Decimal(abs(odd))) + 1
-        # Round to 3 decimal places as per your DB schema Numeric(6, 3)
         return decimal_odds.quantize(Decimal("0.001"))
     except (ValueError, TypeError, InvalidOperation):
         print(f"Could not convert American odd '{odd}' to Decimal.")
-        return None # Return None if conversion fails
+        return None
+
+# =============================================================================
+# MAIN PINNACLE DATA FETCHING
+# =============================================================================
 
 def fetch_pinnacle_nrl_data():
     """
@@ -140,10 +171,9 @@ def fetch_pinnacle_nrl_data():
 
         if not matchups_dict:
             print("No NRL matchups found in fetched data.")
-            return [] # Return empty list, not None
+            return []
 
-        # Get league ID and fetch odds
-        # Use a try-except in case matchups_dict is empty after filtering
+        # --- GET LEAGUE ID AND FETCH ODDS ---
         try:
              league_id = next(iter(matchups_dict.values()))["league_id"]
         except StopIteration:
@@ -153,85 +183,61 @@ def fetch_pinnacle_nrl_data():
         game_odds_raw = fetch_game_odds(league_id, headers)
         if game_odds_raw is None:
             print("Failed to fetch game odds. Proceeding without odds.")
-            game_odds_dict = {} # Process matches without odds
+            game_odds_dict = {}
         else:
             game_odds_dict = process_game_odds(game_odds_raw, list(matchups_dict.keys()))
 
+        # --- PROCESS MATCHUPS WITH ODDS ---
         print(f"Processing {len(matchups_dict)} potential NRL matchups...")
-        # Combine matchup data with odds data
         for external_id, matchup_data in matchups_dict.items():
             match_info = {
-                'external_id': str(external_id), # Ensure external ID is a string
-                'home_team': matchup_data['home_team'].strip(), # Strip whitespace
+                'external_id': str(external_id),
+                'home_team': matchup_data['home_team'].strip(),
                 'away_team': matchup_data['away_team'].strip(),
                 'start_time_str': matchup_data['start_time'],
-                'round_number': matchup_data['round'], # Assuming this is the correct round number
+                'round_number': matchup_data['round'],
                 'home_odds': None,
                 'away_odds': None
             }
 
-            # Parse start time string into timezone-aware datetime object (UTC)
+            # --- PARSE START TIME ---
             try:
-                # Pinnacle uses ISO 8601 format with 'Z' for UTC
                 match_info['start_time_dt'] = datetime.fromisoformat(matchup_data['start_time'].replace('Z', '+00:00'))
             except ValueError:
                 print(f"Error parsing start time '{matchup_data['start_time']}' for match {external_id}. Skipping match.")
-                continue # Skip match if time can't be parsed
+                continue
 
-            # Add odds if available
+            # --- ADD ODDS IF AVAILABLE ---
             if external_id in game_odds_dict:
                 odds_data = game_odds_dict[external_id].get("prices")
                 if odds_data and len(odds_data) >= 2:
-                    # Assuming index 0 is home, index 1 is away based on your example
-                    # Convert American odds from price field to Decimal
                     home_american = odds_data[0].get("price")
                     away_american = odds_data[1].get("price")
                     match_info['home_odds'] = american_to_decimal(home_american) if home_american else None
                     match_info['away_odds'] = american_to_decimal(away_american) if away_american else None
 
             processed_matches.append(match_info)
-            # print(f"Processed Match: {match_info}") # Debugging
-
-            # # # --- TEMPORARY OVERRIDE FOR TESTING ODDS UPDATE ---
-            # # # Define the match you want to change and the new odds
-            # test_match_home_team_canonical = "New Zealand Warriors" # Use the canonical name stored in your DB
-            # test_match_away_team_canonical = "Penrith Panthers"
-            # new_test_home_odds = Decimal("1.99") # New odds
-            # new_test_away_odds = Decimal("10.00") # Optional: change away odds too
-
-            # found_and_overridden = False
-            # for match in processed_matches:
-            #     # Compare against the already normalized names in 'match'
-            #     if match['home_team'] == test_match_home_team_canonical and \
-            #     match['away_team'] == test_match_away_team_canonical:
-            #         log.warning(f"TESTING OVERRIDE: Modifying odds for {match['home_team']} vs {match['away_team']}.")
-            #         log.warning(f"  Old odds: H={match['home_odds']}, A={match['away_odds']}")
-            #         match['home_odds'] = new_test_home_odds
-            #         match['away_odds'] = new_test_away_odds # If changing away too
-            #         log.warning(f"  New odds: H={match['home_odds']}, A={match['away_odds']}")
-            #         found_and_overridden = True
-            #         break # Found and modified, no need to continue loop for override
-
-            # if not found_and_overridden:
-            #     log.warning(f"TESTING OVERRIDE: Did not find {test_match_home_team_canonical} vs {test_match_away_team_canonical} in Pinnacle data to override odds.")
-            # # # --- END TEMPORARY OVERRIDE ---
-
-
 
     except Exception as e:
         print(f"An unexpected error occurred during Pinnacle data fetch: {e}")
         import traceback
         traceback.print_exc()
-        return None # Indicate a general failure
+        return None
 
     print(f"--- Finished Fetching Pinnacle Data. Processed {len(processed_matches)} matches. ---")
     return processed_matches
 
-
+# =============================================================================
+# DATABASE UPDATE FUNCTIONS
+# =============================================================================
 
 def update_matches_from_odds_scraper():
+    """
+    Main function to update database matches with current odds from Pinnacle API.
+    Handles team name normalization, match identification, and SSE event broadcasting.
+    """
     print("--- Starting Odds Update from Pinnacle ---")
-    scraped_pinnacle_matches = fetch_pinnacle_nrl_data() # This gets Pinnacle data
+    scraped_pinnacle_matches = fetch_pinnacle_nrl_data()
 
     if scraped_pinnacle_matches is None:
         print("Failed to fetch data from Pinnacle. Aborting odds update.")
@@ -242,7 +248,9 @@ def update_matches_from_odds_scraper():
 
     matches_odds_updated_count = 0
     matches_not_found_in_db = 0
-    updated_match_details_for_sse = [] # Collect details of matches whose odds changed
+    updated_match_details_for_sse = []
+
+    # --- PROCESS EACH PINNACLE MATCH ---
 
     for pinnacle_match_data in scraped_pinnacle_matches:
         try:
@@ -256,20 +264,18 @@ def update_matches_from_odds_scraper():
                 print(f"Pinnacle data missing key fields: {pinnacle_match_data}")
                 continue
 
-            # Normalize Pinnacle team names
+            # --- NORMALIZE TEAM NAMES AND FIND MATCH ---
             norm_p_home = normalize_team_name(p_home_team)
             norm_p_away = normalize_team_name(p_away_team)
 
-            # Find match in DB (created by NRL.com scraper)
-            # Match based on normalized team names and start time (within a window)
+            # Find match in DB based on normalized team names and start time window
             time_window_start = p_start_time_dt - timedelta(hours=2)
             time_window_end = p_start_time_dt + timedelta(hours=2)
 
-            # This query might need to be more sophisticated if team names are still tricky
             db_match = Match.query.filter(
                 Match.start_time >= time_window_start,
                 Match.start_time <= time_window_end
-            ).all() # Get all matches in window, then filter by normalized names
+            ).all()
 
             found_db_match = None
             for m in db_match:
@@ -278,6 +284,7 @@ def update_matches_from_odds_scraper():
                     found_db_match = m
                     break
 
+            # --- UPDATE ODDS IF MATCH FOUND ---
             if found_db_match:
                 original_home_odds = found_db_match.home_odds
                 original_away_odds = found_db_match.away_odds
@@ -294,20 +301,16 @@ def update_matches_from_odds_scraper():
 
                 if update_needed:
                     found_db_match.last_odds_update = datetime.now(timezone.utc)
-                    # Store Pinnacle's external_id if you want
                     found_db_match.external_match_id = pinnacle_match_data.get('external_id')
                     db.session.add(found_db_match)
                     matches_odds_updated_count += 1
                     print(f"Updated odds for DB Match ID {found_db_match.match_id} ({found_db_match.home_team} vs {found_db_match.away_team}) using Pinnacle data.")
 
-                    # --- ADDED: Collect details for SSE event ---
+                    # --- COLLECT DETAILS FOR SSE EVENT ---
                     updated_match_details_for_sse.append({
                         'match_id': found_db_match.match_id,
                         'home_odds': float(found_db_match.home_odds) if found_db_match.home_odds else None,
                         'away_odds': float(found_db_match.away_odds) if found_db_match.away_odds else None,
-                        # Optionally include other identifiers if useful for frontend
-                        # 'home_team': found_db_match.home_team,
-                        # 'away_team': found_db_match.away_team
                     })
             else:
                 print(f"Could not find DB match for Pinnacle: {norm_p_home} vs {norm_p_away} around {p_start_time_dt}")
@@ -317,14 +320,16 @@ def update_matches_from_odds_scraper():
             print(f"Error processing Pinnacle match data: {pinnacle_match_data}. Error: {e}", exc_info=True)
             db.session.rollback()
             continue
+    
+    # --- COMMIT CHANGES AND SEND SSE EVENTS ---
     try:
-        if matches_odds_updated_count > 0 or updated_match_details_for_sse: # Check if any actual DB adds were made
+        if matches_odds_updated_count > 0 or updated_match_details_for_sse:
             db.session.commit()
             log.info(f"DB Commit successful for odds update. {matches_odds_updated_count} matches affected.")
-            # --- ADDED: Announce SSE events AFTER successful commit ---
+            
+            # --- ANNOUNCE SSE EVENTS AFTER SUCCESSFUL COMMIT ---
             for detail in updated_match_details_for_sse:
                 announce_event('odds_update', detail)
-            # -------------------------------------------------------
         else:
             log.info("No odds changes detected that required a database commit.")
 

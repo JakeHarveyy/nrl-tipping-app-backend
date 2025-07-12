@@ -1,11 +1,28 @@
 # app/services/ai_prediction_service.py
+"""
+AI Prediction Service for NRL Tipping Application
+
+Orchestrates the complete AI prediction pipeline: data preparation, feature engineering,
+model inference, prediction storage, and automated betting. Integrates machine learning
+predictions with the application's betting and user management systems.
+
+Notebook for the unimplmented AI Workflow Available at: https://github.com/JakeHarveyy/NRLMatchPredictor
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import pandas as pd
 import joblib
 import os
 import sys
 from decimal import Decimal
+import logging
+import importlib.util
 
-# Add the project root to the Python path to ensure imports work
+# =============================================================================
+# PATH CONFIGURATION AND DYNAMIC IMPORTS
+# =============================================================================
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -13,23 +30,17 @@ if project_root not in sys.path:
 from app import db
 from app.models import Match, Round, User, AIPrediction
 from app.services.betting_service import place_bet_for_user
-import logging
 
-# Add the prediction pipeline to the path
 prediction_path = os.path.join(project_root, 'app', 'ai_models', 'prediction')
 if prediction_path not in sys.path:
     sys.path.append(prediction_path)
 
-# Use importlib to dynamically import the modules
-import importlib.util
-
-# Import prediction_pipeline module
+# Dynamic import of prediction pipeline modules
 spec = importlib.util.spec_from_file_location("prediction_pipeline", os.path.join(prediction_path, "prediction_pipeline.py"))
 prediction_pipeline_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prediction_pipeline_module)
 NRLPredictionPipeline = prediction_pipeline_module.NRLPredictionPipeline
 
-# Import predict_upcoming_matches module
 spec = importlib.util.spec_from_file_location("predict_upcoming_matches", os.path.join(prediction_path, "predict_upcoming_matches.py"))
 predict_upcoming_matches_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(predict_upcoming_matches_module)
@@ -38,10 +49,20 @@ get_model_features = predict_upcoming_matches_module.get_model_features
 
 log = logging.getLogger(__name__)
 
-# --- Team Name Mapping ---
-# Maps database team names (short) to model training names (full)
+# =============================================================================
+# CONFIGURATION AND CONSTANTS
+# =============================================================================
+MODEL_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_baseline_logistic_model.pkl')
+SCALER_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_feature_scaler.pkl')
+HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_matches_final_model_ready.csv')
+TEAM_STATS_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_team_stats_final_complete.csv')
+AI_BOT_USERNAME = 'LogisticsRegressionBot'
+KELLY_FRACTION = Decimal('0.5')
+
+# =============================================================================
+# TEAM NAME MAPPING
+# =============================================================================
 TEAM_NAME_MAPPING = {
-    # Database name -> Model training name
     'Sea Eagles': 'Manly Sea Eagles',
     'Rabbitohs': 'South Sydney Rabbitohs',
     'Roosters': 'Sydney Roosters',
@@ -52,7 +73,7 @@ TEAM_NAME_MAPPING = {
     'Bulldogs': 'Canterbury Bulldogs',
     'Titans': 'Gold Coast Titans',
     'Sharks': 'Cronulla Sharks',
-    'Dolphins': 'Dolphins',  # Same name
+    'Dolphins': 'Dolphins',
     'Panthers': 'Penrith Panthers',
     'Broncos': 'Brisbane Broncos',
     'Knights': 'Newcastle Knights',
@@ -61,48 +82,27 @@ TEAM_NAME_MAPPING = {
     'Warriors': 'New Zealand Warriors'
 }
 
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
 def _map_team_name_for_model(db_team_name):
-    """
-    Maps database team name to the full name used in model training.
-    
-    Args:
-        db_team_name (str): Team name as stored in database
-        
-    Returns:
-        str: Full team name as expected by the model
-    """
+    """Map database team name to the full name used in model training."""
     mapped_name = TEAM_NAME_MAPPING.get(db_team_name, db_team_name)
     if mapped_name != db_team_name:
         log.debug(f"Mapped team name: '{db_team_name}' -> '{mapped_name}'")
     return mapped_name
 
 def _map_team_name_from_model(model_team_name):
-    """
-    Maps model team name back to database team name.
-    
-    Args:
-        model_team_name (str): Team name as used in model training
-        
-    Returns:
-        str: Short team name as stored in database
-    """
-    # Create reverse mapping
+    """Map model team name back to database team name."""
     reverse_mapping = {v: k for k, v in TEAM_NAME_MAPPING.items()}
     mapped_name = reverse_mapping.get(model_team_name, model_team_name)
     if mapped_name != model_team_name:
         log.debug(f"Reverse mapped team name: '{model_team_name}' -> '{mapped_name}'")
     return mapped_name
 
-# --- Configuration ---
-MODEL_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_baseline_logistic_model.pkl')
-SCALER_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_feature_scaler.pkl')
-HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_matches_final_model_ready.csv')
-TEAM_STATS_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_team_stats_final_complete.csv')
-AI_BOT_USERNAME = 'LogisticsRegressionBot'
-KELLY_FRACTION = Decimal('0.5')  # Use 10% of recommended Kelly for safety
-
 def _load_model_and_scaler():
-    """Loads the trained model and scaler from .pkl files."""
+    """Load the trained model and scaler from .pkl files."""
     try:
         model = joblib.load(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
@@ -112,14 +112,17 @@ def _load_model_and_scaler():
         log.error(f"AI model or scaler file not found: {e}")
         return None, None
 
+# =============================================================================
+# DATA PREPARATION FUNCTIONS
+# =============================================================================
+
 def _prepare_upcoming_matches_data(round_number, year):
     """
     Fetch matches from database and prepare data for the prediction pipeline.
-    This replaces the CSV data source with database queries.
+    Converts database match format to the format expected by the AI model.
     """
     log.info(f"Preparing match data for Round {round_number}, Year {year}...")
     
-    # Get matches from database
     matches_for_round = Match.query.join(Round).filter(
         Round.round_number == round_number, 
         Round.year == year
@@ -129,35 +132,31 @@ def _prepare_upcoming_matches_data(round_number, year):
         log.warning(f"No matches found for Round {round_number}, Year {year}")
         return None
     
-    # Convert to the format expected by prediction pipeline
     match_data = []
     for match in matches_for_round:
-        # Skip matches without odds - AI predictions require odds for Kelly criterion
         if not match.home_odds or not match.away_odds:
             log.info(f"Skipping match {match.home_team} vs {match.away_team} - missing odds (Home: {match.home_odds}, Away: {match.away_odds})")
             continue
             
-        # Map team names from database format to model training format
         home_team_mapped = _map_team_name_for_model(match.home_team)
         away_team_mapped = _map_team_name_for_model(match.away_team)
         
         match_dict = {
             'Date': match.start_time.strftime('%d/%m/%Y'),
-            'Home Team': home_team_mapped,  # Use mapped name for model
-            'Away Team': away_team_mapped,  # Use mapped name for model
+            'Home Team': home_team_mapped,
+            'Away Team': away_team_mapped,
             'Venue': match.venue or 'TBD',
-            'City': match.venue_city or 'TBD',  # Use actual venue city from database
-            'Home Odds': float(match.home_odds),  # Guaranteed to have odds at this point
-            'Away Odds': float(match.away_odds),  # Guaranteed to have odds at this point
-            'Home Score': '',  # Empty for upcoming matches
+            'City': match.venue_city or 'TBD',
+            'Home Odds': float(match.home_odds),
+            'Away Odds': float(match.away_odds),
+            'Home Score': '',
             'Away Score': '',
-            'match_id_db': match.match_id,  # Keep DB ID for later reference
-            'db_home_team': match.home_team,  # Keep original DB names for matching
-            'db_away_team': match.away_team   # Keep original DB names for matching
+            'match_id_db': match.match_id,
+            'db_home_team': match.home_team,
+            'db_away_team': match.away_team
         }
         match_data.append(match_dict)
     
-    # Save as temporary CSV for the pipeline (or modify pipeline to accept DataFrame)
     import tempfile
     temp_csv_path = os.path.join(tempfile.gettempdir(), 'upcoming_matches_from_db.csv')
     df = pd.DataFrame(match_data)
@@ -166,21 +165,23 @@ def _prepare_upcoming_matches_data(round_number, year):
     log.info(f"Prepared {len(match_data)} matches for prediction pipeline")
     return temp_csv_path, matches_for_round
 
+# =============================================================================
+# PREDICTION PIPELINE FUNCTIONS
+# =============================================================================
+
 def _run_prediction_pipeline(upcoming_matches_path):
     """
     Run the complete NRL prediction pipeline to generate model-ready features.
-    This replaces _run_data_pipeline_for_round() with our actual pipeline.
+    Integrates with the feature engineering and prediction modules.
     """
     try:
         log.info("Running NRL prediction pipeline...")
         
-        # Initialize and run the pipeline with correct paths
         pipeline = NRLPredictionPipeline(
             historical_data_path=HISTORICAL_DATA_PATH,
             team_stats_path=TEAM_STATS_PATH
         )
         
-        # Modify pipeline to use our database-generated matches
         prediction_df = pipeline.run_prediction_pipeline(
             upcoming_matches_path=upcoming_matches_path
         )
@@ -196,26 +197,29 @@ def _run_prediction_pipeline(upcoming_matches_path):
         log.error(f"Error running prediction pipeline: {e}", exc_info=True)
         return None
 
+# =============================================================================
+# MAIN SERVICE FUNCTIONS
+# =============================================================================
+
 def run_ai_predictions_for_round(round_number, year):
     """
-    Main service function integrating our complete prediction pipeline.
-    This effectively replaces predict_upcoming_matches.py in a web service context.
+    Main service function integrating the complete prediction pipeline.
+    Orchestrates data preparation, model inference, prediction storage, and automated betting.
     """
     log.info(f"Starting AI predictions for Round {round_number}, Year {year}")
     
-    # Load AI model
+    # --- INITIALISE COMPONENTS ---
     model, scaler = _load_model_and_scaler()
     if not model or not scaler:
         log.error("Cannot load AI model - aborting predictions")
         return False
     
-    # Get AI bot user
     ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
     if not ai_bot:
         log.error(f"AI Bot user '{AI_BOT_USERNAME}' not found")
         return False
     
-    # Step 1: Prepare match data from database
+    # --- PREPARE MATCH DATA ---
     match_data_result = _prepare_upcoming_matches_data(round_number, year)
     if not match_data_result:
         log.warning("No match data available for predictions")
@@ -224,21 +228,19 @@ def run_ai_predictions_for_round(round_number, year):
     temp_csv_path, db_matches = match_data_result
     log.info(f"Prepared {len(db_matches)} matches for prediction")
     
-    # Step 2: Run the complete prediction pipeline
+    # --- RUN PREDICTION PIPELINE ---
     prediction_df = _run_prediction_pipeline(temp_csv_path)
     if prediction_df is None:
         log.error("Prediction pipeline failed")
         return False
     
-    # Step 3: Generate predictions using the backend-compatible prediction service
+    # --- GENERATE MODEL PREDICTIONS ---
     try:
-        # Import the backend-compatible prediction function
         predict_spec = importlib.util.spec_from_file_location("predict_upcoming_matches", 
                                                             os.path.join(prediction_path, "predict_upcoming_matches.py"))
         predict_module = importlib.util.module_from_spec(predict_spec)
         predict_spec.loader.exec_module(predict_module)
         
-        # Use the new backend-compatible prediction function
         results_df = predict_module.predict_upcoming_matches(
             prediction_df,
             model_path=MODEL_PATH,
@@ -252,7 +254,7 @@ def run_ai_predictions_for_round(round_number, year):
         log.info(f"Generated {len(results_df)} AI predictions")
         log.info(f"Prediction columns: {list(results_df.columns)}")
         
-        # Step 4: Store predictions and place bets
+        # --- PROCESS AND STORE PREDICTIONS ---
         predictions_stored = 0
         for index, row in results_df.iterrows():
             log.info(f"Processing prediction {index + 1}/{len(results_df)}: {row.get('Home Team', 'Unknown')} vs {row.get('Away Team', 'Unknown')}")
@@ -273,11 +275,9 @@ def run_ai_predictions_for_round(round_number, year):
             
             if not db_match:
                 log.warning(f"Could not find DB match for {home_team_for_db} vs {away_team_for_db} (mapped from {row['Home Team']} vs {row['Away Team']})")
-                # Debug: Show available matches
                 log.info(f"Available matches in DB: {[(m.home_team, m.away_team) for m in db_matches]}")
                 continue
 
-            # Double-check that the match has odds (safety check)
             if not db_match.home_odds or not db_match.away_odds:
                 log.warning(f"Skipping prediction for {db_match.home_team} vs {db_match.away_team} - missing odds in database")
                 continue
@@ -294,17 +294,16 @@ def run_ai_predictions_for_round(round_number, year):
                 log.info(f"AI prediction already exists for match {db_match.home_team} vs {db_match.away_team} (ID: {existing_prediction.prediction_id})")
                 continue
             
-            # Store prediction in database using mapped team names for display
+            # --- STORE PREDICTION IN DATABASE ---
             try:
-                # Calculate the actual betting stake used (Kelly × Kelly Fraction)
                 kelly_stake_raw = row['kelly_criterion_stake']
                 kelly_stake_actual = kelly_stake_raw * float(KELLY_FRACTION)
                 
                 prediction_entry = AIPrediction(
                     user_id=ai_bot.user_id,
                     match_id=db_match.match_id,
-                    home_team=row['Home Team'],  # Use mapped names in predictions table
-                    away_team=row['Away Team'],  # Use mapped names in predictions table
+                    home_team=row['Home Team'],
+                    away_team=row['Away Team'],
                     match_date=db_match.start_time,
                     home_win_probability=row['home_win_probability'],
                     away_win_probability=row['away_win_probability'],
@@ -313,13 +312,12 @@ def run_ai_predictions_for_round(round_number, year):
                     betting_recommendation=row['betting_recommendation'],
                     recommended_team=row.get('recommended_team'),
                     confidence_level=row['confidence_level'],
-                    kelly_criterion_stake=kelly_stake_actual  # Store the actual stake used for betting
+                    kelly_criterion_stake=kelly_stake_actual
                 )
                 db.session.add(prediction_entry)
                 predictions_stored += 1
                 log.info(f"Stored AI prediction for {row['Home Team']} vs {row['Away Team']} (Winner: {row['predicted_winner']}, Confidence: {row['model_confidence']:.2f})")
                 
-                # Commit each prediction individually to avoid losing all data on error
                 db.session.commit()
                 log.info(f"Committed prediction {predictions_stored} to database successfully")
                 
@@ -328,9 +326,8 @@ def run_ai_predictions_for_round(round_number, year):
                 db.session.rollback()
                 continue
             
-            # Place bet if recommended
+            # --- PLACE AUTOMATED BET IF RECOMMENDED ---
             if row['betting_recommendation'] != 'No Bet' and row['kelly_criterion_stake'] > 0:
-                # Check if AI bot has already placed a bet for this match
                 from app.models import Bet
                 existing_bet = Bet.query.filter_by(
                     user_id=ai_bot.user_id,
@@ -367,7 +364,7 @@ def run_ai_predictions_for_round(round_number, year):
                                 success, result_msg = place_bet_for_user(
                                     user=ai_bot,
                                     match=db_match,
-                                    team_selected=db_team_name,  # Use database team name for betting
+                                    team_selected=db_team_name,
                                     bet_amount=bet_amount
                                 )
                                 
@@ -378,7 +375,7 @@ def run_ai_predictions_for_round(round_number, year):
                             else:
                                 log.error(f"Could not map recommended team '{recommended_team_for_bet}' back to database team name")
         
-        # Final commit and cleanup
+        # --- FINALISE AND CLEANUP ---
         try:
             db.session.commit()
             if predictions_stored > 0:
@@ -389,11 +386,9 @@ def run_ai_predictions_for_round(round_number, year):
             log.error(f"Failed final commit: {final_commit_error}")
             db.session.rollback()
         
-        # Cleanup
         if os.path.exists(temp_csv_path):
             os.remove(temp_csv_path)
             
-        # Return True if we successfully processed predictions (even if they already existed)
         return len(results_df) > 0
         
     except Exception as e:
@@ -401,10 +396,13 @@ def run_ai_predictions_for_round(round_number, year):
         log.error(f"Error processing predictions: {e}", exc_info=True)
         return False
 
-# --- API Endpoint Function ---
+# =============================================================================
+# API ENDPOINT FUNCTIONS
+# =============================================================================
 def get_ai_predictions_for_round(round_number, year):
     """
     Return AI predictions for frontend display without placing bets.
+    Used by API endpoints to fetch stored predictions for user interface.
     """
     ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
     if not ai_bot:

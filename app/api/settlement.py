@@ -23,7 +23,6 @@ def settle_bets_for_match(match_id, home_score, away_score):
     if match.status == 'Completed':
          return False, f"Match ID {match_id} has already been settled."
 
-    # Determine winner
     winner = None
     if home_score > away_score:
         winner = match.home_team
@@ -36,7 +35,7 @@ def settle_bets_for_match(match_id, home_score, away_score):
     pending_bets = match.bets.filter(Bet.status == 'Pending').all()
     log.info(f"Found {len(pending_bets)} pending bets for match ID: {match_id}")
 
-    affected_users_for_sse = {} # Store {user_id: new_bankroll}
+    affected_users_for_sse = {} 
 
     try:
         # --- Update Match Record ---
@@ -44,14 +43,14 @@ def settle_bets_for_match(match_id, home_score, away_score):
         match.result_away_score = away_score
         match.winner = winner
         match.status = 'Completed'
-        db.session.add(match) # Add updated match to session
+        db.session.add(match) 
 
         # --- Process Each Bet ---
         for bet in pending_bets:
-            user = bet.user # Get user via relationship
+            user = bet.user 
             if not user:
                  print(f"WARNING: User not found for Bet ID {bet.bet_id}, skipping settlement for this bet.")
-                 continue # Skip this bet if user somehow doesn't exist
+                 continue 
 
             previous_balance = user.bankroll
             new_bet_status = 'Lost' # Default to Lost
@@ -79,12 +78,11 @@ def settle_bets_for_match(match_id, home_score, away_score):
             # --- Update Bet Status ---
             bet.status = new_bet_status
             bet.settlement_time = datetime.now(timezone.utc)
-            db.session.add(bet) # Add updated bet to session
+            db.session.add(bet) 
 
             new_balance = previous_balance + payout_amount
-            user.bankroll = new_balance # Update user object's bankroll
+            user.bankroll = new_balance 
 
-            # Create history entry
             history_entry = BankrollHistory(
                 user_id=user.user_id,
                 round_number=match.round.round_number,
@@ -99,17 +97,17 @@ def settle_bets_for_match(match_id, home_score, away_score):
             log.info(f"   User {user.username}: Bankroll {previous_balance} -> {new_balance} (+{payout_amount}). History logged.")
 
              # --- Store user for SSE if bankroll changed ---
-            if payout_amount > 0 or history_type == 'Bet Loss': # Even if $0 change for loss, user might want to know
+            if payout_amount > 0 or history_type == 'Bet Loss': 
                 affected_users_for_sse[user.user_id] = new_balance
 
-            db.session.commit() # Commit all changes for this match settlement
+            db.session.commit()
             log.info(f"Successfully settled match {match_id} and {len(pending_bets)} bets.")
 
             # --- Announce bankroll updates AFTER successful commit ---
             for user_id, final_bankroll in affected_users_for_sse.items():
                 announce_event('bankroll_update', {
-                    'user_id': user_id, # So frontend can check if it's the current user
-                    'new_bankroll': float(final_bankroll), # Send as float for JSON
+                    'user_id': user_id, 
+                    'new_bankroll': float(final_bankroll), 
                     'reason': 'bet_settlement',
                     'match_id': match_id
                 })

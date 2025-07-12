@@ -51,9 +51,6 @@ TEAM_NAME_MAP = {
     "manly warringah sea eagles": "Sea Eagles",
     "manly-warringah sea eagles": "Sea Eagles",
     "manly sea eagles": "Sea Eagles",
-
-    # Add any other variations you encounter from different scrapers
-    # Example: If a scraper just says "Tigers"
     "tigers": "Wests Tigers",
 }
 
@@ -73,8 +70,5 @@ def normalize_team_name(name: str) -> str:
     if canonical_name:
         return canonical_name
     else:
-        # If not in map, maybe it's already a canonical name or a new variation
-        # Return the original name, but consistently cased (e.g., Title Case)
-        # This helps if a new team appears or a variation isn't mapped yet.
         log.warning(f"Team name '{name}' (processed: '{processed_name}') not found in TEAM_NAME_MAP. Returning title-cased original.")
-        return name.strip().title() # Example: "new team" -> "New Team"
+        return name.strip().title() 

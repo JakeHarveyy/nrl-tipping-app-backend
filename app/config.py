@@ -1,4 +1,12 @@
 # app/config.py
+"""
+Configuration settings for NRL Tipping Application Backend
+
+Defines Flask application configurations for different environments (development, production).
+Handles database connections, Google OAuth credentials, frontend URLs, and environment-specific
+settings loaded from environment variables.
+"""
+
 import os
 from dotenv import load_dotenv
 
@@ -10,8 +18,7 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY')
     SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    # Add other configurations as needed
-    
+
     GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
     GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
     GOOGLE_REDIRECT_URI = os.environ.get('GOOGLE_REDIRECT_URI')
@@ -23,19 +30,13 @@ class DevelopmentConfig(Config):
 
 class ProductionConfig(Config):
     DEBUG = False
-    # Heroku provides DATABASE_URL but it might use postgres:// instead of postgresql://
-    # Fix the URL format for SQLAlchemy 1.4+
     database_url = os.environ.get('DATABASE_URL')
     if database_url and database_url.startswith('postgres://'):
         database_url = database_url.replace('postgres://', 'postgresql://', 1)
     SQLALCHEMY_DATABASE_URI = database_url
-    # Add production-specific settings here
 
-# You might add TestingConfig later
-
-# Dictionary to access configs by name
 config_by_name = dict(
     development=DevelopmentConfig,
     prod=ProductionConfig,
-    production=ProductionConfig  # Heroku might use "production"
+    production=ProductionConfig 
 )
