@@ -15,6 +15,34 @@ from app.sse_events import sse_event_stream_generator
 from app.services.betting_service import place_bet_for_user
 from app.services.ai_prediction_service import AI_BOT_USERNAME
 
+# --- Helper function for calculating initial bankroll based on current round ---
+def calculate_initial_bankroll():
+    """
+    Calculate initial bankroll based on current active round.
+    Returns tuple of (initial_bankroll, round_number)
+    """
+    now = datetime.now(timezone.utc)
+    current_year = now.year
+    
+    # Find the current active round
+    active_round = Round.query.filter_by(status='Active', year=current_year).first()
+    
+    if active_round:
+        # If there's an active round, use its round number * 1000
+        round_number = active_round.round_number
+    else:
+        # If no active round, try to find the earliest upcoming round
+        upcoming_round = Round.query.filter_by(status='Upcoming', year=current_year) \
+                                   .order_by(Round.start_date.asc()).first()
+        if upcoming_round:
+            round_number = upcoming_round.round_number
+        else:
+            # Fallback to round 1 if no rounds found
+            round_number = 1
+    
+    initial_bankroll = Decimal(str(round_number * 1000))
+    return initial_bankroll, round_number
+
 class RoundListResource(Resource): # Ensure it inherits from Resource
     def get(self):
         """Get list of all rounds"""
@@ -114,7 +142,9 @@ class UserRegister(Resource):
         if User.find_by_email(data['email']):
             return {'message': 'A user with that email already exists'}, 400
 
-        initial_bankroll = Decimal('1000.00')
+        # Calculate initial bankroll based on current active round
+        initial_bankroll, round_number = calculate_initial_bankroll()
+        
         user = User(
             username=data['username'],
             email=data['email'].lower(), # Store email in lowercase
@@ -131,7 +161,7 @@ class UserRegister(Resource):
             # --- Log Initial Bankroll ---
             history_entry = BankrollHistory(
                 user_id=user.user_id,
-                round_number=None, # Or determine current round if applicable/desired
+                round_number=round_number, # Set to the current round number
                 change_type='Initial Deposit',
                 related_bet_id=None,
                 amount_change=initial_bankroll,
@@ -144,7 +174,7 @@ class UserRegister(Resource):
 
             db.session.commit() # Commit both user and history entry together
             print(f"User {user.username} created with ID {user.user_id}")
-            print(f"Initial bankroll history logged for user {user.user_id}")
+            print(f"Initial bankroll ${initial_bankroll} (Round {round_number} x $1000) logged for user {user.user_id}")
 
         except Exception as e:
             db.session.rollback() # Rollback ALL changes if any error occurs
@@ -215,8 +245,6 @@ class GoogleLogin(Resource):
             # Fallback to constructing it dynamically if not set in config
             redirect_uri = url_for('googleauthcallback', _external=True)
         
-        print(f"Redirect URI for Google: {redirect_uri}") # Debug print
-        
         # Add state parameter to force fresh request and prevent caching
         import time
         state = f"oauth_state_{int(time.time())}"
@@ -243,22 +271,47 @@ class GoogleAuthCallback(Resource):
 
         user = User.find_by_google_id(google_id)
         # ... (logic to find by email or create new user as before) ...
+        is_new_user = False
         if not user:
             user = User.find_by_email(email)
             if user:
                 if user.google_id is None: user.google_id = google_id
                 if not user.is_email_verified: user.is_email_verified = True
             else:
+                # This is a completely new user, calculate initial bankroll based on current active round
+                is_new_user = True
+                initial_bankroll, round_number = calculate_initial_bankroll()
+                
                 temp_username = username
                 counter = 1
                 while User.find_by_username(temp_username):
                     temp_username = f"{username}{counter}"
                     counter += 1
                 username = temp_username
-                user = User(username=username, email=email.lower(), google_id=google_id, is_email_verified=True)
+                user = User(username=username, email=email.lower(), google_id=google_id, is_email_verified=True, bankroll=initial_bankroll)
             try:
-                 user.save_to_db()
+                 db.session.add(user) # Add user to session
+                 db.session.flush() # Flush to assign user.user_id without committing yet
+                 
+                 # --- Log Initial Bankroll for new Google users ---
+                 if is_new_user:
+                     history_entry = BankrollHistory(
+                         user_id=user.user_id,
+                         round_number=round_number,
+                         change_type='Initial Deposit',
+                         related_bet_id=None,
+                         amount_change=initial_bankroll,
+                         previous_balance=Decimal('0.00'),
+                         new_balance=initial_bankroll,
+                         timestamp=datetime.now(timezone.utc)
+                     )
+                     db.session.add(history_entry)
+                     print(f"Google user {user.username} created with initial bankroll ${initial_bankroll} (Round {round_number} x $1000)")
+                 # ------------------------------------------------
+                 
+                 db.session.commit()
             except Exception as e:
+                 db.session.rollback()
                  print(f"Error saving Google user: {e}")
                  frontend_error_url = f"{current_app.config.get('FRONTEND_URL', 'http://localhost:5173')}/login?error=google_db_error"
                  return redirect(frontend_error_url)
@@ -722,4 +775,3 @@ def initialize_routes(app, api):
 
      # Keep for debugging startup
 
-    
