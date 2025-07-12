@@ -534,58 +534,116 @@ class AIBotBankrollHistory(Resource):
             'bankroll_history': [item.to_dict() for item in history_items]
         }, 200
 
-class AIPredictionsByRound(Resource):
-    def get(self, year, round_number):
-        """Get AI predictions for a specific round"""
+class AIPredictionsByRoundRange(Resource):
+    def get(self, year, start_round, end_round):
+        """Get AI predictions for a range of rounds"""
         logger = logging.getLogger(__name__)
-        logger.info(f"Fetching AI predictions for Year {year}, Round {round_number}")
+        logger.info(f"Fetching AI predictions for Year {year}, Rounds {start_round}-{end_round}")
         
-        round_obj = Round.query.filter_by(year=year, round_number=round_number).first()
-        if not round_obj:
-            logger.warning(f"Round not found for Year {year}, Round {round_number}")
-            return {'message': 'Round not found.'}, 404
-
-        matches_in_round = round_obj.matches.all()
-        match_ids_in_round = [m.match_id for m in matches_in_round]
-        logger.info(f"Found {len(match_ids_in_round)} matches in round: {match_ids_in_round}")
-
-        if not match_ids_in_round:
-            logger.info("No matches found in round")
+        # Validate round range
+        if start_round > end_round:
+            return {'message': 'Start round cannot be greater than end round.'}, 400
+        
+        if end_round - start_round > 20:  # Prevent excessive queries
+            return {'message': 'Round range too large. Maximum 20 rounds per request.'}, 400
+        
+        # Get all rounds in the specified range
+        rounds_in_range = Round.query.filter(
+            Round.year == year,
+            Round.round_number >= start_round,
+            Round.round_number <= end_round
+        ).all()
+        
+        if not rounds_in_range:
+            logger.warning(f"No rounds found for Year {year}, Rounds {start_round}-{end_round}")
+            return {'message': 'No rounds found in the specified range.'}, 404
+        
+        logger.info(f"Found {len(rounds_in_range)} rounds in range")
+        
+        # Get all matches from these rounds
+        round_ids = [r.round_id for r in rounds_in_range]
+        matches_in_range = Match.query.filter(Match.round_id.in_(round_ids)).all()
+        match_ids_in_range = [m.match_id for m in matches_in_range]
+        
+        logger.info(f"Found {len(match_ids_in_range)} matches across {len(rounds_in_range)} rounds")
+        
+        if not match_ids_in_range:
+            logger.info("No matches found in round range")
             return {'predictions': {}}, 200
         
+        # Get AI bot user
         ai_bot = User.query.filter_by(username=AI_BOT_USERNAME).first()
         if not ai_bot:
             logger.error(f'AI Bot user "{AI_BOT_USERNAME}" not found in database')
             return {'message': f'AI Bot user "{AI_BOT_USERNAME}" not found.'}, 404
         
         logger.info(f"Found AI bot user: {ai_bot.username} (ID: {ai_bot.user_id})")
-
+        
+        # Get all predictions for matches in the round range
         predictions = AIPrediction.query.filter(
             AIPrediction.user_id == ai_bot.user_id,
-            AIPrediction.match_id.in_(match_ids_in_round)
+            AIPrediction.match_id.in_(match_ids_in_range)
         ).all()
         
-        logger.info(f"Found {len(predictions)} AI predictions for the round")
-        if predictions:
-            logger.info(f"Sample prediction: Match {predictions[0].match_id} - {predictions[0].home_team} vs {predictions[0].away_team}")
-
-        predictions_by_match_id = {
-            p.match_id: {
-                'prediction_id': p.prediction_id,
-                'home_win_probability': float(p.home_win_probability),
-                'away_win_probability': float(p.away_win_probability),
-                'predicted_winner': p.predicted_winner,
-                'model_confidence': float(p.model_confidence),
-                'betting_recommendation': p.betting_recommendation,
-                'recommended_team': p.recommended_team,
-                'confidence_level': p.confidence_level,
-                'kelly_criterion_stake': float(p.kelly_criterion_stake),
-                'created_at': p.created_at.isoformat()
-            } for p in predictions
-        }
+        logger.info(f"Found {len(predictions)} AI predictions across the round range")
         
-        logger.info(f"Returning {len(predictions_by_match_id)} predictions to frontend")
-        return {'predictions': predictions_by_match_id}, 200
+        # Organize predictions by round and match
+        predictions_by_round = {}
+        
+        # Create a mapping of match_id to round_number for efficient lookup
+        match_to_round = {}
+        for match in matches_in_range:
+            round_obj = next((r for r in rounds_in_range if r.round_id == match.round_id), None)
+            if round_obj:
+                match_to_round[match.match_id] = round_obj.round_number
+        
+        # Group predictions by round
+        for p in predictions:
+            round_number = match_to_round.get(p.match_id)
+            if round_number is not None:
+                if round_number not in predictions_by_round:
+                    predictions_by_round[round_number] = {}
+                
+                predictions_by_round[round_number][p.match_id] = {
+                    'prediction_id': p.prediction_id,
+                    'home_win_probability': float(p.home_win_probability),
+                    'away_win_probability': float(p.away_win_probability),
+                    'predicted_winner': p.predicted_winner,
+                    'model_confidence': float(p.model_confidence),
+                    'betting_recommendation': p.betting_recommendation,
+                    'recommended_team': p.recommended_team,
+                    'confidence_level': p.confidence_level,
+                    'kelly_criterion_stake': float(p.kelly_criterion_stake),
+                    'created_at': p.created_at.isoformat()
+                }
+        
+        # Also include round information for context
+        round_info = {}
+        for round_obj in rounds_in_range:
+            round_info[round_obj.round_number] = {
+                'round_id': round_obj.round_id,
+                'round_number': round_obj.round_number,
+                'year': round_obj.year,
+                'status': round_obj.status,
+                'start_date': round_obj.start_date.isoformat() if round_obj.start_date else None,
+                'end_date': round_obj.end_date.isoformat() if round_obj.end_date else None
+            }
+        
+        total_predictions = sum(len(round_preds) for round_preds in predictions_by_round.values())
+        logger.info(f"Returning {total_predictions} predictions across {len(predictions_by_round)} rounds to frontend")
+        
+        return {
+            'predictions': predictions_by_round,
+            'round_info': round_info,
+            'summary': {
+                'year': year,
+                'start_round': start_round,
+                'end_round': end_round,
+                'rounds_found': len(rounds_in_range),
+                'total_matches': len(match_ids_in_range),
+                'total_predictions': total_predictions
+            }
+        }, 200
 
 # =============================================================================
 # LEADERBOARD RESOURCES
@@ -657,7 +715,7 @@ def initialize_routes(app, api):
     # AI Bot endpoints
     api.add_resource(AIBotBetList, '/api/ai-bot/bets')
     api.add_resource(AIBotBankrollHistory, '/api/ai-bot/bankroll-history')
-    api.add_resource(AIPredictionsByRound, '/api/ai-predictions/year/<int:year>/round/<int:round_number>')
+    api.add_resource(AIPredictionsByRoundRange, '/api/ai-predictions/year/<int:year>/rounds/<int:start_round>-<int:end_round>')
 
     # Leaderboard endpoints
     api.add_resource(GlobalLeaderboard, '/api/leaderboard/global')
