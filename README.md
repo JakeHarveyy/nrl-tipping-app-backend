@@ -1,12 +1,12 @@
 # NRL Tipping Application Backend
 
-<Insert screenshot of application dashboard/interface here>
+![Application Dashboard](images/landingPage.png)
 
 ## Description
 
 A comprehensive Flask-based backend API for an NRL (National Rugby League) tipping application that combines real-time match data, AI-powered predictions, and social betting features. The application automatically scrapes live match results, settles bets, and provides intelligent betting recommendations using machine learning models.
 
-**Note**: This repository contains the backend API services only. For the complete web application, you'll also need the frontend repository: [nrl-tipping-app-frontend](https://github.com/yourusername/nrl-tipping-app-frontend). The frontend provides the user interface and interacts with this backend via REST API endpoints.
+**Note**: This repository contains the backend API services only. For the complete web application, you'll also need the frontend repository: [nrl-tipping-app-frontend](https://github.com/JakeHarveyy/nrl-tipping-app-frontend). The frontend provides the user interface and interacts with this backend via REST API endpoints.
 
 ## Languages and Libraries Used
 
@@ -28,7 +28,7 @@ A comprehensive Flask-based backend API for an NRL (National Rugby League) tippi
 - **Beautiful Soup** - Web scraping for match results
 - **Alembic** - Database migrations
 
-<Insert technology stack diagram here>
+![Tech Stack](images/techStack.png)
 
 ## File Structure
 
@@ -60,21 +60,9 @@ nrl-tipping-app-backend/
 └── README.md                     # Project documentation
 ```
 
-<Insert file structure visualization here>
-
 ## High-Level Execution Flow
 
-1. **Application Startup**: Flask app initializes with extensions, schedules background jobs
-2. **Data Population**: CLI commands populate rounds and matches from NRL.com API
-3. **Background Services**: 
-   - Scheduled jobs monitor live matches and update scores
-   - AI prediction service generates betting recommendations
-   - Bet settlement occurs automatically when matches finish
-4. **API Layer**: RESTful endpoints serve frontend requests for authentication, betting, and data
-5. **Real-time Updates**: Server-sent events push live score updates and match results
-6. **Frontend Integration**: The companion frontend application consumes these APIs to provide the user interface
-
-<Insert execution flow diagram here>
+![Application Dashboard](images/highLevelFlow.png)
 
 ## Installation Instructions
 
@@ -88,13 +76,13 @@ nrl-tipping-app-backend/
 For the full application experience, you'll need both repositories:
 
 1. **Backend (this repository)**: Follow the instructions below
-2. **Frontend**: Clone and set up [nrl-tipping-app-frontend](https://github.com/yourusername/nrl-tipping-app-frontend)
+2. **Frontend**: Clone and set up [nrl-tipping-app-frontend](https://github.com/JakeHarveyy/nrl-tipping-app-frontend)
 
 ### Local Development Setup
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/nrl-tipping-app-backend.git
+   git clone https://github.com/JakeHarveyy/nrl-tipping-app-backend.git
    cd nrl-tipping-app-backend
    ```
 
@@ -153,20 +141,7 @@ For the full application experience, you'll need both repositories:
 
 The API will be available at `http://localhost:5000`
 
-**Next Step**: Set up the [frontend application](https://github.com/yourusername/nrl-tipping-app-frontend) to interact with this backend.
-
-<Insert installation screenshot here>
-
-### Docker Setup (Alternative)
-
-```bash
-# Clone repository
-git clone https://github.com/yourusername/nrl-tipping-app-backend.git
-cd nrl-tipping-app-backend
-
-# Start with Docker Compose
-docker-compose up --build
-```
+**Next Step**: Set up the [frontend application](https://github.com/JakeHarveyy/nrl-tipping-app-frontend) to interact with this backend.
 
 ## How to Use the Project
 
@@ -196,8 +171,6 @@ This backend provides RESTful API endpoints that are consumed by the frontend ap
 
 #### Real-time Updates
 - `GET /api/sse/events` - Server-sent events stream for live updates
-
-<Insert API documentation screenshot here>
 
 ### CLI Commands
 
@@ -241,8 +214,6 @@ bet_response = requests.post('http://localhost:5000/api/bet',
 )
 ```
 
-<Insert usage example screenshot here>
-
 ## Contribution Guidelines
 
 We welcome contributions to improve the NRL Tipping Application! Please follow these steps:
@@ -277,15 +248,6 @@ We welcome contributions to improve the NRL Tipping Application! Please follow t
    - Click "New Pull Request"
    - Provide a clear description of your changes
 
-### Development Standards
-- Write clean, documented code
-- Include unit tests for new features
-- Follow existing code patterns and architecture
-- Update README if adding new functionality
-- Consider the impact on the frontend application
-
-<Insert contribution workflow diagram here>
-
 ## Contact Details
 
 - **Project Maintainer**: Jake Harvey
@@ -309,8 +271,6 @@ For bug reports and feature requests, please use the [GitHub Issues](https://git
 - **Google OAuth** - For secure authentication services
 - **Contributors** - Thank you to all contributors who help improve this project
 
-<Insert acknowledgements collage/logos here>
-
 ---
 
 ## License
@@ -319,4 +279,5 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 
 ---
 
-*Built with ❤️ for NRL fans and Machine Learning enthusiasts*
+*Built with ❤️ for Machine learning enthusiast who enjoy the NRL*
+*Up the Tigers*
