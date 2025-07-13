@@ -1,4 +1,5 @@
-# NRL Tipping Application Backend
+# NRL Tipping Application Backend 
+[Launched Website](https://nrltipping.vercel.app/)
 
 ![Application Dashboard](images/landingPage.png)
 
@@ -213,6 +214,7 @@ bet_response = requests.post('http://localhost:5000/api/bet',
     }
 )
 ```
+![BetHistory](images/bets.png)
 
 ## Contribution Guidelines
 
@@ -280,4 +282,5 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 ---
 
 *Built with ❤️ for Machine learning enthusiast who enjoy the NRL*
+
 *Up the Tigers*
