@@ -76,3 +76,5 @@ cover/
 # Optional system files
 .DS_Store
 Thumbs.db
+
+CLAUDE.md

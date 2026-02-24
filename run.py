@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone # <--- Ensure these are imported
 from decimal import Decimal # <--- Ensure this is imported
 from app import create_app, db # <--- Ensure db is imported
-from app.models import Round, Match # <--- Ensure models are imported
+from app.models import Round, Match, Bet, BankrollHistory, AIPrediction # <--- Ensure models are imported
 from app.services.results_scraper_service import populate_schedule_from_nrl_com
 import click
 from app.models import User
@@ -12,6 +12,31 @@ from app.models import User
 # Get config name from environment variable or default to 'dev'
 config_name = os.getenv('FLASK_ENV', 'development') # Use 'development' as key now
 app = create_app(config_name)
+
+@app.cli.command("reset-db")
+def reset_db():
+    """Deletes all data from every table while keeping the schema intact."""
+    with app.app_context():
+        print("WARNING: This will permanently delete all data. Starting reset...")
+        try:
+            # Delete in FK-safe order (children first, parents last)
+            deleted = {}
+            deleted['ai_predictions']    = db.session.query(AIPrediction).delete()
+            deleted['bankroll_history']  = db.session.query(BankrollHistory).delete()
+            deleted['bets']              = db.session.query(Bet).delete()
+            deleted['matches']           = db.session.query(Match).delete()
+            deleted['rounds']            = db.session.query(Round).delete()
+            deleted['users']             = db.session.query(User).delete()
+            db.session.commit()
+            for table, count in deleted.items():
+                print(f"  Deleted {count} rows from {table}")
+            print("Database reset complete. Schema preserved.")
+        except Exception as e:
+            db.session.rollback()
+            print(f"ERROR during reset: {e}")
+            import traceback
+            traceback.print_exc()
+
 
 @app.cli.command("populate_schedule")
 @click.option('--start_round', default=1, type=int, help="First round to fetch.")
