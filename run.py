@@ -141,6 +141,23 @@ def run_ai_predictions(round_number, year):
             traceback.print_exc()
             db.session.rollback()
 
+@app.cli.command("list-jobs")
+def list_jobs():
+    """Lists all scheduled APScheduler jobs with their trigger and next run time."""
+    from app import scheduler
+    jobs = scheduler.get_jobs()
+    if not jobs:
+        print("No scheduled jobs found.")
+        return
+    print(f"\n{'ID':<35} {'Trigger':<20} {'Next Run (UTC)'}")
+    print("-" * 80)
+    for job in jobs:
+        trigger_str = str(job.trigger)
+        next_run = job.next_run_time.strftime('%Y-%m-%d %H:%M:%S') if job.next_run_time else 'N/A'
+        print(f"{job.id:<35} {trigger_str:<20} {next_run}")
+    print()
+
+
 # --- Main execution ---
 if __name__ == '__main__':
     # Note: app.run() is generally used for development server.

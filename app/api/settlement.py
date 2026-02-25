@@ -97,22 +97,23 @@ def settle_bets_for_match(match_id, home_score, away_score):
             log.info(f"   User {user.username}: Bankroll {previous_balance} -> {new_balance} (+{payout_amount}). History logged.")
 
              # --- Store user for SSE if bankroll changed ---
-            if payout_amount > 0 or history_type == 'Bet Loss': 
+            if payout_amount > 0 or history_type == 'Bet Loss':
                 affected_users_for_sse[user.user_id] = new_balance
 
-            db.session.commit()
-            log.info(f"Successfully settled match {match_id} and {len(pending_bets)} bets.")
+        # --- Commit all changes at once AFTER processing all bets ---
+        db.session.commit()
+        log.info(f"Successfully settled match {match_id} and {len(pending_bets)} bets.")
 
-            # --- Announce bankroll updates AFTER successful commit ---
-            for user_id, final_bankroll in affected_users_for_sse.items():
-                announce_event('bankroll_update', {
-                    'user_id': user_id, 
-                    'new_bankroll': float(final_bankroll), 
-                    'reason': 'bet_settlement',
-                    'match_id': match_id
-                })
-            
-            return True, f"Match {match_id} settled. Winner: {winner}. {len(pending_bets)} bets processed."
+        # --- Announce bankroll updates AFTER successful commit ---
+        for user_id, final_bankroll in affected_users_for_sse.items():
+            announce_event('bankroll_update', {
+                'user_id': user_id,
+                'new_bankroll': float(final_bankroll),
+                'reason': 'bet_settlement',
+                'match_id': match_id
+            })
+
+        return True, f"Match {match_id} settled. Winner: {winner}. {len(pending_bets)} bets processed."
 
     except Exception as e:
         db.session.rollback()

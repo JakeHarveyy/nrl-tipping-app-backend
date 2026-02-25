@@ -154,9 +154,27 @@ def scrape_specific_match_result_job(match_id_to_scrape):
             status, home_score, away_score = fetch_match_result(match_identifier_details)
             log.info(f"{job_log_prefix} Scraped Status='{status}', Score={home_score}-{away_score}")
 
-            if status == 'Error':
-                log.error(f"{job_log_prefix} Scraper service returned error. Job will retry.")
-                return 
+            if status in ('Error', 'Unknown'):
+                start_time_utc = match.start_time if match.start_time.tzinfo else match.start_time.replace(tzinfo=timezone.utc)
+                match_age_hours = (datetime.now(timezone.utc) - start_time_utc).total_seconds() / 3600
+                if match_age_hours > 4:
+                    log.critical(f"{job_log_prefix} Match is {match_age_hours:.1f}h old and scraper still returning "
+                                 f"'{status}'. Attempting force-settle with last known scores.")
+                    if match.result_home_score is not None and match.result_away_score is not None:
+                        success, msg = settle_bets_for_match(match.match_id, match.result_home_score, match.result_away_score)
+                        if success:
+                            log.info(f"{job_log_prefix} Force-settlement successful.")
+                        else:
+                            log.critical(f"{job_log_prefix} Force-settlement failed: {msg}.")
+                    else:
+                        log.critical(f"{job_log_prefix} No cached scores available. Removing stuck job — manual settlement required.")
+                    try:
+                        scheduler.remove_job(f'scrape_match_{match_id_to_scrape}')
+                    except JobLookupError:
+                        pass
+                else:
+                    log.warning(f"{job_log_prefix} Status '{status}' — will retry (match is {match_age_hours:.1f}h old).")
+                return
 
             original_db_status = match.status # Store original status
 
@@ -230,11 +248,32 @@ def check_for_live_matches_job():
     app = scheduler.app
     with app.app_context():
         log.info(f"--- Running Live Match Check Job at {datetime.now(timezone.utc)} ---")
-        from app.models import Match 
+        from app.models import Match, Bet
+        from app.api.settlement import settle_bets_for_match
         now = datetime.now(timezone.utc)
 
-        # Start checking slightly before kickoff, check for a few hours after
-        start_window = now - timedelta(hours=3) # Check games started up to 3 hours ago
+        # --- Orphaned Bet Recovery: re-settle Completed matches that still have Pending bets ---
+        try:
+            orphaned_matches = (
+                db.session.query(Match)
+                .filter(Match.status == 'Completed')
+                .join(Match.bets)
+                .filter(Bet.status == 'Pending')
+                .distinct()
+                .all()
+            )
+            for stuck_match in orphaned_matches:
+                log.warning(f"[Recovery] Found Completed match ID {stuck_match.match_id} "
+                            f"({stuck_match.home_team} vs {stuck_match.away_team}) with Pending bets. Re-settling.")
+                stuck_match.status = 'Live'
+                db.session.commit()
+                settle_bets_for_match(stuck_match.match_id, stuck_match.result_home_score, stuck_match.result_away_score)
+        except Exception as e:
+            log.error(f"[Recovery] Error during orphaned bet recovery: {e}", exc_info=True)
+            db.session.rollback()
+
+        # Start checking slightly before kickoff, check for several hours after
+        start_window = now - timedelta(hours=6) # Check games started up to 6 hours ago (covers dyno wake-up gaps)
         end_window = now + timedelta(minutes=10) # Check games starting in the next 10 mins
         print(f"Current UTC time (now): {now}")
         print(f"Querying for matches between {start_window} and {end_window}")
