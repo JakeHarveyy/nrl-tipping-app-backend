@@ -158,6 +158,53 @@ def list_jobs():
     print()
 
 
+@app.cli.command("run-live-match-check")
+def run_live_match_check():
+    """Manually run the live match check job (scans for live/upcoming matches and schedules scrape jobs)."""
+    from app import check_for_live_matches_job
+    print("--- Manually triggering live match check job ---")
+    check_for_live_matches_job()
+    print("--- Done ---")
+
+
+@app.cli.command("run-round-management")
+def run_round_management():
+    """Manually run the round management job (transitions round statuses and triggers bankroll top-ups)."""
+    from app import check_and_process_rounds_job
+    print("--- Manually triggering round management job ---")
+    check_and_process_rounds_job()
+    print("--- Done ---")
+
+
+@app.cli.command("run-odds-update")
+def run_odds_update():
+    """Manually run the odds update job (fetches latest odds from NRL.com)."""
+    from app import odds_update_job
+    print("--- Manually triggering odds update job ---")
+    odds_update_job()
+    print("--- Done ---")
+
+
+@app.cli.command("run-historical-data-update")
+def run_historical_data_update():
+    """Manually run the historical data update job (appends completed round results and regenerates features)."""
+    with app.app_context():
+        from app.services.historical_data_updater import auto_update_after_round_completion
+        print("--- Manually triggering historical data update job ---")
+        auto_update_after_round_completion()
+        print("--- Done ---")
+
+
+@app.cli.command("run-scrape-match")
+@click.argument('match_id', type=int)
+def run_scrape_match(match_id):
+    """Manually run the scrape job for a specific match ID."""
+    from app import scrape_specific_match_result_job
+    print(f"--- Manually triggering scrape job for match ID {match_id} ---")
+    scrape_specific_match_result_job(match_id)
+    print("--- Done ---")
+
+
 # --- Main execution ---
 if __name__ == '__main__':
     # Note: app.run() is generally used for development server.
