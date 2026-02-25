@@ -24,7 +24,6 @@ class Config:
     GOOGLE_REDIRECT_URI = os.environ.get('GOOGLE_REDIRECT_URI')
 
     FRONTEND_URL = os.environ.get('FRONTEND_URL') or 'http://localhost:5173'
-    NRL_PROXY_URL = os.environ.get('NRL_PROXY_URL')
 
 class DevelopmentConfig(Config):
     DEBUG = True

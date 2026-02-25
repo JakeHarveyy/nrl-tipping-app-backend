@@ -31,30 +31,7 @@ log = logging.getLogger(__name__)
 # =============================================================================
 
 def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
-    """Fetches and parses fixture data for a specific round from NRL.com.
-
-    Attempts the Vercel proxy (Sydney region) first so that the request originates
-    from an Australian IP — required for Sportsbet odds to be present in the response.
-    Falls back to a direct NRL.com request if the proxy is unavailable or unconfigured.
-    """
-    import os
-    proxy_url = os.environ.get('NRL_PROXY_URL')
-
-    # --- PROXY FETCH (Australian IP, includes odds) ---
-    if proxy_url:
-        try:
-            url = f"{proxy_url}?competition={competition}&round={round_num}&season={year}"
-            log.info(f"Fetching fixture data via proxy: {url}")
-            response = requests.get(url, timeout=25)
-            response.raise_for_status()
-            data = response.json()
-            fixtures = data.get("fixtures", [])
-            log.info(f"Successfully fetched {len(fixtures)} fixture items via proxy for Round {round_num}, Year {year}.")
-            return fixtures
-        except Exception as e:
-            log.warning(f"Proxy fetch failed ({e}). Falling back to direct NRL.com fetch.")
-
-    # --- DIRECT FETCH (fallback — no odds on non-AU IPs) ---
+    """Fetches and parses fixture data for a specific round from NRL.com."""
     url = f"https://www.nrl.com/draw/?competition={competition}&round={round_num}&season={year}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -62,7 +39,7 @@ def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
     log.info(f"Fetching fixture data from: {url}")
     try:
         response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
+        response.raise_for_status() # Check for HTTP errors
 
         soup = BeautifulSoup(response.text, "html.parser")
         script_tag = soup.find("div", {"id": "vue-draw"})
@@ -77,9 +54,9 @@ def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
             return None
 
         data = json.loads(raw_json)
-        fixtures = data.get("fixtures", [])
+        fixtures = data.get("fixtures", []) # Get the list of fixtures/matches
         log.info(f"Successfully fetched and parsed {len(fixtures)} fixture items for Round {round_num}, Year {year}.")
-        return fixtures
+        return fixtures # Return the raw list of fixtures
 
     except requests.exceptions.RequestException as e:
         log.error(f"HTTP Error fetching NRL fixture data for Round {round_num}, Year {year}: {e}")
@@ -88,7 +65,7 @@ def _fetch_nrl_round_data_from_web(round_num, year, competition='111'):
         log.error(f"JSON Decode Error parsing fixture data for Round {round_num}, Year {year}: {e}")
         return None
     except Exception as e:
-        log.error(f"Unexpected error fetching NRL fixture data for Round {round_num}, Year {year}: {e}", exc_info=True)
+        log.error(f"Unexpected error fetching NRL fixture data for Round {round_num}, Year {year}: {e}", exc_info=True) # Log traceback
         return None
 
 # =============================================================================
