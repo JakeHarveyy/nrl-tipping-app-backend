@@ -428,19 +428,24 @@ def _schedule_round_management_job():
     else:
         print(f"Job '{job_id_rounds}' already scheduled.")
 
-def _schedule_odds_scraper_job(app):
-    """Schedule the odds scraper job for updating match odds."""
-    from app.services.odds_scraper_service import update_matches_from_odds_scraper
+def odds_update_job():
+    """Runs the odds scraper inside a proper app context."""
+    app = scheduler.app
+    with app.app_context():
+        from app.services.odds_scraper_service import update_matches_from_odds_scraper
+        update_matches_from_odds_scraper()
 
+def _schedule_odds_scraper_job(app):
+    """Schedule the odds scraper job for updating match odds every 3 hours."""
     odds_job_id = 'odds_update_job'
     if app.config.get("ENV") != "testing":
         if not scheduler.get_job(odds_job_id):
             print(f"Scheduling job '{odds_job_id}'.")
             scheduler.add_job(
                 id=odds_job_id,
-                func=lambda: app.app_context().push() or update_matches_from_odds_scraper(),
-                trigger='interval', 
-                minutes=60,
+                func=odds_update_job,
+                trigger='interval',
+                minutes=180,
                 replace_existing=True
             )
         else:
