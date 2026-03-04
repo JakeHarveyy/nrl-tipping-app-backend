@@ -569,12 +569,19 @@ class AIPredictionsByRound(Resource):
         if predictions:
             logger.info(f"Sample prediction: Match {predictions[0].match_id} - {predictions[0].home_team} vs {predictions[0].away_team}")
 
+        # Build a match lookup for actual_winner
+        match_lookup = {m.match_id: m for m in matches_in_round}
+
         predictions_by_match_id = {
             p.match_id: {
                 'prediction_id': p.prediction_id,
+                'home_team': p.home_team,
+                'away_team': p.away_team,
+                'match_date': p.match_date.isoformat() if p.match_date else None,
                 'home_win_probability': float(p.home_win_probability),
                 'away_win_probability': float(p.away_win_probability),
                 'predicted_winner': p.predicted_winner,
+                'actual_winner': match_lookup.get(p.match_id, None) and match_lookup[p.match_id].winner,
                 'model_confidence': float(p.model_confidence),
                 'betting_recommendation': p.betting_recommendation,
                 'recommended_team': p.recommended_team,
@@ -643,25 +650,30 @@ class AIPredictionsByRoundRange(Resource):
         # Organize predictions by round and match
         predictions_by_round = {}
         
-        # Create a mapping of match_id to round_number for efficient lookup
+        # Create mappings for efficient lookup
         match_to_round = {}
+        match_lookup = {m.match_id: m for m in matches_in_range}
         for match in matches_in_range:
             round_obj = next((r for r in rounds_in_range if r.round_id == match.round_id), None)
             if round_obj:
                 match_to_round[match.match_id] = round_obj.round_number
-        
+
         # Group predictions by round
         for p in predictions:
             round_number = match_to_round.get(p.match_id)
             if round_number is not None:
                 if round_number not in predictions_by_round:
                     predictions_by_round[round_number] = {}
-                
+
                 predictions_by_round[round_number][p.match_id] = {
                     'prediction_id': p.prediction_id,
+                    'home_team': p.home_team,
+                    'away_team': p.away_team,
+                    'match_date': p.match_date.isoformat() if p.match_date else None,
                     'home_win_probability': float(p.home_win_probability),
                     'away_win_probability': float(p.away_win_probability),
                     'predicted_winner': p.predicted_winner,
+                    'actual_winner': match_lookup.get(p.match_id, None) and match_lookup[p.match_id].winner,
                     'model_confidence': float(p.model_confidence),
                     'betting_recommendation': p.betting_recommendation,
                     'recommended_team': p.recommended_team,
