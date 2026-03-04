@@ -16,7 +16,8 @@ def place_bet_for_user(user: User, match: Match, team_selected: str, bet_amount:
     if not user or not match or not team_selected or not bet_amount:
         return False, "Invalid arguments provided to place_bet service."
 
-    if match.start_time <= datetime.now(timezone.utc) or match.status != 'Scheduled':
+    start_time = match.start_time if match.start_time.tzinfo else match.start_time.replace(tzinfo=timezone.utc)
+    if start_time <= datetime.now(timezone.utc) or match.status != 'Scheduled':
         return False, f"Betting closed for this match (Status: {match.status})."
 
     selected_odds = None

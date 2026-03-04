@@ -57,7 +57,7 @@ SCALER_PATH = os.path.join(project_root, 'app', 'ai_models', 'nrl_feature_scaler
 HISTORICAL_DATA_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_matches_final_model_ready.csv')
 TEAM_STATS_PATH = os.path.join(project_root, 'app', 'ai_models', 'data', 'nrl_team_stats_final_complete.csv')
 AI_BOT_USERNAME = 'LogisticsRegressionBot'
-KELLY_FRACTION = Decimal('0.5')
+CONFIDENCE_THRESHOLD = 0.60
 
 # =============================================================================
 # TEAM NAME MAPPING
@@ -256,23 +256,23 @@ def run_ai_predictions_for_round(round_number, year):
         
         # --- PROCESS AND STORE PREDICTIONS ---
         predictions_stored = 0
+        stored_predictions = []  # Track (row, db_match) for betting pass
+
         for index, row in results_df.iterrows():
             log.info(f"Processing prediction {index + 1}/{len(results_df)}: {row.get('Home Team', 'Unknown')} vs {row.get('Away Team', 'Unknown')}")
-            
-            # Convert mapped team names back to database team names for matching
+
             home_team_for_db = _map_team_name_from_model(row['Home Team'])
             away_team_for_db = _map_team_name_from_model(row['Away Team'])
-            
+
             log.info(f"Mapped team names for DB matching: {row['Home Team']} -> {home_team_for_db}, {row['Away Team']} -> {away_team_for_db}")
-            
-            # Find corresponding database match using mapped-back team names
+
             db_match = None
             for match in db_matches:
-                if (match.home_team == home_team_for_db and 
+                if (match.home_team == home_team_for_db and
                     match.away_team == away_team_for_db):
                     db_match = match
                     break
-            
+
             if not db_match:
                 log.warning(f"Could not find DB match for {home_team_for_db} vs {away_team_for_db} (mapped from {row['Home Team']} vs {row['Away Team']})")
                 log.info(f"Available matches in DB: {[(m.home_team, m.away_team) for m in db_matches]}")
@@ -281,24 +281,19 @@ def run_ai_predictions_for_round(round_number, year):
             if not db_match.home_odds or not db_match.away_odds:
                 log.warning(f"Skipping prediction for {db_match.home_team} vs {db_match.away_team} - missing odds in database")
                 continue
-            
+
             log.info(f"Found matching DB match: {db_match.home_team} vs {db_match.away_team} (ID: {db_match.match_id})")
-            
-            # Check if prediction already exists for this match
+
             existing_prediction = AIPrediction.query.filter_by(
                 user_id=ai_bot.user_id,
                 match_id=db_match.match_id
             ).first()
-            
+
             if existing_prediction:
                 log.info(f"AI prediction already exists for match {db_match.home_team} vs {db_match.away_team} (ID: {existing_prediction.prediction_id})")
                 continue
-            
-            # --- STORE PREDICTION IN DATABASE ---
+
             try:
-                kelly_stake_raw = row['kelly_criterion_stake']
-                kelly_stake_actual = kelly_stake_raw * float(KELLY_FRACTION)
-                
                 prediction_entry = AIPrediction(
                     user_id=ai_bot.user_id,
                     match_id=db_match.match_id,
@@ -312,68 +307,73 @@ def run_ai_predictions_for_round(round_number, year):
                     betting_recommendation=row['betting_recommendation'],
                     recommended_team=row.get('recommended_team'),
                     confidence_level=row['confidence_level'],
-                    kelly_criterion_stake=kelly_stake_actual
+                    kelly_criterion_stake=row.get('kelly_criterion_stake', 0)
                 )
                 db.session.add(prediction_entry)
-                predictions_stored += 1
-                log.info(f"Stored AI prediction for {row['Home Team']} vs {row['Away Team']} (Winner: {row['predicted_winner']}, Confidence: {row['model_confidence']:.2f})")
-                
                 db.session.commit()
-                log.info(f"Committed prediction {predictions_stored} to database successfully")
-                
+                predictions_stored += 1
+                stored_predictions.append((row, db_match))
+                log.info(f"Stored AI prediction for {row['Home Team']} vs {row['Away Team']} (Winner: {row['predicted_winner']}, Confidence: {row['model_confidence']:.2f})")
+
             except Exception as prediction_error:
                 log.error(f"Failed to store/commit prediction: {prediction_error}", exc_info=True)
                 db.session.rollback()
                 continue
-            
-            # --- PLACE AUTOMATED BET IF RECOMMENDED ---
-            if row['betting_recommendation'] != 'No Bet' and row['kelly_criterion_stake'] > 0:
-                from app.models import Bet
-                existing_bet = Bet.query.filter_by(
-                    user_id=ai_bot.user_id,
-                    match_id=db_match.match_id,
-                    status='Pending'
-                ).first()
-                
-                if existing_bet:
-                    log.info(f"AI Bot already has a bet placed for match {db_match.home_team} vs {db_match.away_team} (Bet ID: {existing_bet.bet_id})")
+
+        # --- PLACE BETS: equal split on matches with confidence > threshold ---
+        from app.models import Bet
+
+        bettable = []
+        for row, db_match in stored_predictions:
+            confidence = row['model_confidence']
+            recommended_team = row.get('recommended_team')
+            if confidence <= CONFIDENCE_THRESHOLD or not recommended_team:
+                log.info(f"Skipping bet for {db_match.home_team} vs {db_match.away_team} (confidence {confidence:.1%} <= {CONFIDENCE_THRESHOLD:.0%})")
+                continue
+
+            existing_bet = Bet.query.filter_by(
+                user_id=ai_bot.user_id,
+                match_id=db_match.match_id,
+                status='Pending'
+            ).first()
+            if existing_bet:
+                log.info(f"AI Bot already has a bet for {db_match.home_team} vs {db_match.away_team}")
+                continue
+
+            # Map recommended team back to DB team name
+            if recommended_team == row['Home Team']:
+                db_team_name = db_match.home_team
+            elif recommended_team == row['Away Team']:
+                db_team_name = db_match.away_team
+            else:
+                log.error(f"Could not map recommended team '{recommended_team}' to DB team name")
+                continue
+
+            bettable.append((row, db_match, db_team_name))
+
+        if bettable:
+            db.session.refresh(ai_bot)
+            bankroll = Decimal(str(ai_bot.bankroll))
+            bet_amount = (bankroll / len(bettable)).quantize(Decimal('0.01'))
+            log.info(f"Splitting ${bankroll} across {len(bettable)} bets = ${bet_amount} each")
+
+            for row, db_match, db_team_name in bettable:
+                db.session.refresh(ai_bot)
+                stake = min(bet_amount, Decimal(str(ai_bot.bankroll)))
+                if stake < Decimal('0.01'):
+                    log.warning(f"Insufficient bankroll to bet on {db_match.home_team} vs {db_match.away_team}")
+                    break
+
+                success, result_msg = place_bet_for_user(
+                    user=ai_bot,
+                    match=db_match,
+                    team_selected=db_team_name,
+                    bet_amount=stake
+                )
+                if success:
+                    log.info(f"AI Bot placed ${stake} bet on {db_team_name} ({row['model_confidence']:.1%} confidence)")
                 else:
-                    # Calculate bet amount using Kelly criterion
-                    db.session.refresh(ai_bot)
-                    kelly_stake = float(row['kelly_criterion_stake'])
-                    # Apply Kelly fraction (safety multiplier) to reduce bet size
-                    bet_amount = Decimal(str(ai_bot.bankroll)) * Decimal(str(kelly_stake)) * KELLY_FRACTION
-                    
-                    # Cap bet amount
-                    max_bet = Decimal(str(ai_bot.bankroll)) * Decimal('0.1')
-                    bet_amount = min(bet_amount, max_bet)
-                    bet_amount = bet_amount.quantize(Decimal('0.01'))
-                    
-                    if bet_amount > Decimal('0.01'):
-                        # Map the recommended team back to database team name for betting
-                        recommended_team_for_bet = row.get('recommended_team')
-                        if recommended_team_for_bet:
-                            # Convert mapped team name back to database team name
-                            db_team_name = None
-                            if recommended_team_for_bet == row['Home Team']:
-                                db_team_name = db_match.home_team
-                            elif recommended_team_for_bet == row['Away Team']:
-                                db_team_name = db_match.away_team
-                            
-                            if db_team_name:
-                                success, result_msg = place_bet_for_user(
-                                    user=ai_bot,
-                                    match=db_match,
-                                    team_selected=db_team_name,
-                                    bet_amount=bet_amount
-                                )
-                                
-                                if success:
-                                    log.info(f"AI Bot placed ${bet_amount} bet on {db_team_name} (mapped from {recommended_team_for_bet})")
-                                else:
-                                    log.error(f"Failed to place bet: {result_msg}")
-                            else:
-                                log.error(f"Could not map recommended team '{recommended_team_for_bet}' back to database team name")
+                    log.error(f"Failed to place bet: {result_msg}")
         
         # --- FINALISE AND CLEANUP ---
         try:
